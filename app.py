@@ -48,8 +48,6 @@ def get_master_data(month_tab):
         sr_id = "1l7UDY3BFEgxlSmwejfUU6XgbP1k8OOyq5cCJmVNXyuE"
         sr_df = pd.DataFrame(client.open_by_key(sr_id).worksheet(month_tab).get_all_records())
 
-        # --- 4. DATA MERGING & MULTI-ID LOGIC ---
-        # Updated to include "GLOBO" in the matching logic
         def extract_globo_id(s):
             match = re.search(r'(GLOBO\d+)', str(s).upper())
             return match.group(1) if match else str(s).strip()
@@ -57,7 +55,6 @@ def get_master_data(month_tab):
         shop_df['Match_ID'] = shop_df['Name'].apply(extract_globo_id)
         sr_df['Match_ID'] = sr_df['Order ID'].apply(extract_globo_id)
         
-        # Group Shiprocket items into multi-line strings for sub-row visual
         sr_grouped = sr_df.groupby('Match_ID').agg({
             'Order ID': lambda x: "\n".join(x.astype(str)),
             'AWB Number': lambda x: "\n".join(x.astype(str)),
@@ -105,20 +102,41 @@ st.info(f"Viewing Month: **{selected_month.replace('_', ' ')}**")
 df = get_master_data(selected_month)
 
 if df is not None:
-    m1, m2, m3 = st.columns(3)
+    # --- CALCULATIONS ---
+    df['Total Revenue'] = pd.to_numeric(df['Total Revenue'], errors='coerce').fillna(0)
+    total_orders = len(df)
+    total_rev = df['Total Revenue'].sum()
     
-    total_rev = pd.to_numeric(df['Total Revenue'], errors='coerce').sum()
-    m1.metric("Shopify Total Orders", len(df))
+    # Identify Delivered Orders
+    is_delivered = df['Shipping Status'].str.contains('Delivered', case=False, na=False)
+    delivered_df = df[is_delivered]
+    delivered_count = len(delivered_df)
+    realised_rev = delivered_df['Total Revenue'].sum()
+    delivery_perc = (delivered_count / total_orders * 100) if total_orders > 0 else 0
+    
+    # Payment Method Wise Revenue (Delivered Only)
+    pay_methods = delivered_df.groupby('Payment Method')['Total Revenue'].sum().to_dict()
+
+    # --- TOP METRICS SECTION ---
+    # Line 1: Main Stats
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Shopify Total Orders", total_orders)
     m2.metric("Total Revenue", f"₹{total_rev:,.2f}")
-    
-    if 'Shipping Status' in df:
-        delivered_count = len(df[df['Shipping Status'].str.contains('Delivered', case=False, na=False)])
-        m3.metric("Delivered Orders", delivered_count)
+    m3.metric("Delivered Orders", delivered_count)
+    m4.metric("Realised Revenue", f"₹{realised_rev:,.2f}")
+    m5.metric("Delivery %", f"{delivery_perc:.1f}%")
+
+    # Line 2: Payment Stats (Smaller Format)
+    st.write("**Realised Revenue by Payment Method (Delivered Only):**")
+    p_cols = st.columns(len(pay_methods) if pay_methods else 1)
+    for i, (method, amt) in enumerate(pay_methods.items()):
+        with p_cols[i]:
+            st.caption(f"{method}")
+            st.write(f"₹{amt:,.2f}")
 
     st.divider()
     
-    # Table Display - use st.write or st.table for better multi-line row support
-    # st.dataframe with st.column_config ensures newlines are rendered as visual breaks
+    # Table Display
     st.dataframe(
         df, 
         use_container_width=True, 
