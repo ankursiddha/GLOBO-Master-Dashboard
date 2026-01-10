@@ -68,6 +68,21 @@ def get_master_data(month_tab):
             how='left'
         )
 
+        # --- OVERRIDE LOGIC ---
+        # 1. Shipping Status Override
+        if 'Override Shipping Status' in merged.columns:
+            merged['Status'] = merged.apply(
+                lambda row: f"{row['Override Shipping Status']} (O)" if str(row['Override Shipping Status']).strip() != "" else row['Status'], 
+                axis=1
+            )
+
+        # 2. Payment Method Override
+        if 'Override Payment Method' in merged.columns:
+            merged['Payment Method'] = merged.apply(
+                lambda row: f"{row['Override Payment Method']} (O)" if str(row['Override Payment Method']).strip() != "" else row['Payment Method'], 
+                axis=1
+            )
+
         column_mapping = {
             'Name': 'Order ID (Shopify)',
             'Order ID': 'Shiprocket Order ID',
@@ -107,7 +122,7 @@ if df is not None:
     total_orders = len(df)
     total_rev = df['Total Revenue'].sum()
     
-    # Identify Delivered Orders
+    # Identify Delivered Orders (Includes Override marked as "DELIVERED (O)")
     is_delivered = df['Shipping Status'].str.contains('Delivered', case=False, na=False)
     delivered_df = df[is_delivered]
     delivered_count = len(delivered_df)
@@ -118,7 +133,6 @@ if df is not None:
     pay_methods = delivered_df.groupby('Payment Method')['Total Revenue'].sum().to_dict()
 
     # --- TOP METRICS SECTION ---
-    # Line 1: Main Stats
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Shopify Total Orders", total_orders)
     m2.metric("Total Revenue", f"₹{total_rev:,.2f}")
@@ -126,7 +140,6 @@ if df is not None:
     m4.metric("Realised Revenue", f"₹{realised_rev:,.2f}")
     m5.metric("Delivery %", f"{delivery_perc:.1f}%")
 
-    # Line 2: Payment Stats (Smaller Format)
     st.write("**Realised Revenue by Payment Method (Delivered Only):**")
     p_cols = st.columns(len(pay_methods) if pay_methods else 1)
     for i, (method, amt) in enumerate(pay_methods.items()):
