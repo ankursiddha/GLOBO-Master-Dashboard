@@ -10,13 +10,26 @@ st.set_page_config(page_title="GLOBO Master Dashboard", layout="wide")
 # --- 1. GENERATE MONTH LIST (APR 2024 onwards) ---
 def get_month_options():
     start_date = datetime(2024, 4, 1)
-    # Showing options up to end of 2026
     end_date = datetime(2026, 12, 1)
     options = pd.date_range(start=start_date, end=end_date, freq='MS').strftime('%b_%Y').tolist()
     return options[::-1] # Latest first
 
-st.sidebar.title("📅 Dashboard Filters")
-selected_month = st.sidebar.selectbox("Select Month", get_month_options())
+# --- NEW FILTER SECTION (TOP RIGHT) ---
+t1, t2 = st.columns([3, 1])
+with t1:
+    st.title(f"📊 GLOBO Master Dashboard")
+
+with t2:
+    # Split selection into Month and Year for a cleaner UI
+    years = ["2026", "2025", "2024"]
+    months_short = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    
+    f1, f2 = st.columns(2)
+    sel_year = f1.selectbox("Year", years)
+    sel_month = f2.selectbox("Month", months_short, index=datetime.now().month - 1)
+    
+    # Reconstruct for sheet nomenclature (e.g., Jan_2026)
+    selected_month = f"{sel_month}_{sel_year}"
 
 def get_master_data(month_tab):
     try:
@@ -40,24 +53,35 @@ def get_master_data(month_tab):
         sr_id = "1l7UDY3BFEgxlSmwejfUU6XgbP1k8OOyq5cCJmVNXyuE"
         sr_df = pd.DataFrame(client.open_by_key(sr_id).worksheet(month_tab).get_all_records())
 
-        # --- 4. DATA MERGING ---
-        # Cleaning IDs for matching
-        shop_df['Name'] = shop_df['Name'].astype(str).str.strip()
-        sr_df['Order ID'] = sr_df['Order ID'].astype(str).str.strip()
+        # --- 4. DATA MERGING & MULTI-ID LOGIC ---
+        # Cleaning IDs: Extract only digits to match GLOBO13564 with R_GLOBO13564-C1 etc.
+        def extract_digits(s):
+            match = re.search(r'(\d{5})', str(s))
+            return match.group(1) if match else str(s)
+
+        shop_df['Match_ID'] = shop_df['Name'].apply(extract_digits)
+        sr_df['Match_ID'] = sr_df['Order ID'].apply(extract_digits)
         
+        # Group Shiprocket items into "Sub-rows"
+        # This combines multiple SR orders into single cells separated by newlines
+        sr_grouped = sr_df.groupby('Match_ID').agg({
+            'Order ID': lambda x: "\n".join(x.astype(str)),
+            'AWB Number': lambda x: "\n".join(x.astype(str)),
+            'Status': lambda x: "\n".join(x.astype(str))
+        }).reset_index()
+
         # We perform a LEFT JOIN: Shopify is the Master.
-        # We bring in 'AWB Number' and 'Status' from Shiprocket.
         merged = pd.merge(
             shop_df, 
-            sr_df[['Order ID', 'AWB Number', 'Status']], 
-            left_on='Name', 
-            right_on='Order ID', 
+            sr_grouped, 
+            on='Match_ID', 
             how='left'
         )
 
         # Rename columns to match your request
         column_mapping = {
             'Name': 'Order ID (Shopify)',
+            'Order ID': 'Shiprocket Order ID',
             'AWB Number': 'AWB Number',
             'Status': 'Shipping Status',
             'Subtotal': 'Subtotal',
@@ -71,9 +95,9 @@ def get_master_data(month_tab):
         # Filter and Rename for final display
         final_df = merged.rename(columns=column_mapping)
         
-        # Ensure only the columns you asked for are shown
+        # Ensure only the columns you asked for are shown (Added Shiprocket Order ID)
         requested_view = [
-            'Order ID (Shopify)', 'AWB Number', 'Shipping Status', 'Subtotal', 
+            'Order ID (Shopify)', 'Shiprocket Order ID', 'AWB Number', 'Shipping Status', 'Subtotal', 
             'Shipping Revenue', 'Taxes', 'Total Revenue', 'Shipping Method', 'Payment Method'
         ]
         
@@ -87,7 +111,6 @@ def get_master_data(month_tab):
         return None
 
 # --- 5. DISPLAY ---
-st.title(f"📊 GLOBO Master Dashboard")
 st.info(f"Viewing Month: **{selected_month.replace('_', ' ')}**")
 
 df = get_master_data(selected_month)
@@ -101,6 +124,7 @@ if df is not None:
     m2.metric("Total Revenue", f"₹{total_rev:,.2f}")
     
     if 'Shipping Status' in df:
+        # Note: We check the string content because of the newline-separated sub-rows
         delivered_count = len(df[df['Shipping Status'].str.contains('Delivered', case=False, na=False)])
         m3.metric("Delivered Orders", delivered_count)
 
