@@ -152,7 +152,7 @@ if df is not None:
     # --- STYLED REPORT DOWNLOAD LOGIC ---
     def style_report(row):
         status = str(row['Delivery Status']).upper()
-        if "CANCELLED" in status:
+        if "CANCELED" in status:
             return ['background-color: #ffe599'] * len(row)
         elif "RTO" in status:
             return ['background-color: #ff0000'] * len(row)
