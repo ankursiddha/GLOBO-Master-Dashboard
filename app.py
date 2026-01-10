@@ -4,6 +4,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import re
 from datetime import datetime
+from io import BytesIO
 
 st.set_page_config(page_title="GLOBO Master Dashboard", layout="wide")
 
@@ -61,22 +62,33 @@ def get_master_data(month_tab):
             'Status': lambda x: "\n".join(x.astype(str))
         }).reset_index()
 
-        merged = pd.merge(
-            shop_df, 
-            sr_grouped, 
-            on='Match_ID', 
-            how='left'
-        )
+        merged = pd.merge(shop_df, sr_grouped, on='Match_ID', how='left')
 
-        # --- OVERRIDE LOGIC ---
-        # 1. Shipping Status Override
+        # --- PREPARE 22-COLUMN REPORT DATA ---
+        report_df = merged.copy()
+        
+        # 21 & 22: Status handling
+        report_df['Delivery Status'] = report_df['Status']
+        report_df['Secondary Status'] = report_df['Override Shipping Status'] if 'Override Shipping Status' in report_df.columns else ""
+        
+        # Define the exact 22 columns requested
+        report_cols = [
+            'Name', 'Created at', 'Financial Status', 'Fulfillment Status', 'Currency',
+            'Subtotal', 'Shipping', 'Taxes', 'Total', 'Shipping Method',
+            'Lineitem quantity', 'Lineitem name', 'Outstanding Balance', 'Tax 1 Name',
+            'Tax 1 Value', 'Billing Province Name', 'Shipping Province Name', 
+            'Lineitem price', 'Payment Method', 'Lineitem fulfillment status',
+            'Delivery Status', 'Secondary Status'
+        ]
+        # Filter columns that exist
+        final_report_df = report_df[[c for c in report_cols if c in report_df.columns]]
+
+        # --- DASHBOARD VIEW (Exactly as before) ---
         if 'Override Shipping Status' in merged.columns:
             merged['Status'] = merged.apply(
                 lambda row: f"{row['Override Shipping Status']} (O)" if str(row['Override Shipping Status']).strip() != "" else row['Status'], 
                 axis=1
             )
-
-        # 2. Payment Method Override
         if 'Override Payment Method' in merged.columns:
             merged['Payment Method'] = merged.apply(
                 lambda row: f"{row['Override Payment Method']} (O)" if str(row['Override Payment Method']).strip() != "" else row['Payment Method'], 
@@ -84,37 +96,26 @@ def get_master_data(month_tab):
             )
 
         column_mapping = {
-            'Name': 'Order ID (Shopify)',
-            'Order ID': 'Shiprocket Order ID',
-            'AWB Number': 'AWB Number',
-            'Status': 'Shipping Status',
-            'Subtotal': 'Subtotal',
-            'Shipping': 'Shipping Revenue',
-            'Taxes': 'Taxes',
-            'Total': 'Total Revenue',
-            'Shipping Method': 'Shipping Method',
-            'Payment Method': 'Payment Method'
+            'Name': 'Order ID (Shopify)', 'Order ID': 'Shiprocket Order ID',
+            'AWB Number': 'AWB Number', 'Status': 'Shipping Status',
+            'Subtotal': 'Subtotal', 'Shipping': 'Shipping Revenue',
+            'Taxes': 'Taxes', 'Total': 'Total Revenue',
+            'Shipping Method': 'Shipping Method', 'Payment Method': 'Payment Method'
         }
+        final_dash_df = merged.rename(columns=column_mapping)
+        requested_view = ['Order ID (Shopify)', 'Shiprocket Order ID', 'AWB Number', 'Shipping Status', 'Subtotal', 'Shipping Revenue', 'Taxes', 'Total Revenue', 'Shipping Method', 'Payment Method']
+        final_view_cols = [c for c in requested_view if c in final_dash_df.columns]
         
-        final_df = merged.rename(columns=column_mapping)
-        
-        requested_view = [
-            'Order ID (Shopify)', 'Shiprocket Order ID', 'AWB Number', 'Shipping Status', 'Subtotal', 
-            'Shipping Revenue', 'Taxes', 'Total Revenue', 'Shipping Method', 'Payment Method'
-        ]
-        
-        final_view_cols = [c for c in requested_view if c in final_df.columns]
-        
-        return final_df[final_view_cols]
+        return final_dash_df[final_view_cols], final_report_df
     
     except Exception as e:
         st.error(f"Error connecting to sheets: {e}")
-        return None
+        return None, None
 
 # --- 5. DISPLAY ---
 st.info(f"Viewing Month: **{selected_month.replace('_', ' ')}**")
 
-df = get_master_data(selected_month)
+df, report_df = get_master_data(selected_month)
 
 if df is not None:
     # --- CALCULATIONS ---
@@ -122,17 +123,14 @@ if df is not None:
     total_orders = len(df)
     total_rev = df['Total Revenue'].sum()
     
-    # Identify Delivered Orders (Includes Override marked as "DELIVERED (O)")
     is_delivered = df['Shipping Status'].str.contains('Delivered', case=False, na=False)
     delivered_df = df[is_delivered]
     delivered_count = len(delivered_df)
     realised_rev = delivered_df['Total Revenue'].sum()
     delivery_perc = (delivered_count / total_orders * 100) if total_orders > 0 else 0
     
-    # Payment Method Wise Revenue (Delivered Only)
     pay_methods = delivered_df.groupby('Payment Method')['Total Revenue'].sum().to_dict()
 
-    # --- TOP METRICS SECTION ---
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Shopify Total Orders", total_orders)
     m2.metric("Total Revenue", f"₹{total_rev:,.2f}")
@@ -149,20 +147,31 @@ if df is not None:
 
     st.divider()
     
-    # Table Display
-    st.dataframe(
-        df, 
-        use_container_width=True, 
-        hide_index=True,
-        column_config={
-            "Shiprocket Order ID": st.column_config.TextColumn(width="medium"),
-            "AWB Number": st.column_config.TextColumn(width="medium"),
-            "Shipping Status": st.column_config.TextColumn(width="medium"),
-        }
-    )
+    st.dataframe(df, use_container_width=True, hide_index=True)
     
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download This Month's Report", csv, f"Globo_{selected_month}.csv", "text/csv")
+    # --- STYLED REPORT DOWNLOAD LOGIC ---
+    def style_report(row):
+        status = str(row['Delivery Status']).upper()
+        if "CANCELLED" in status:
+            return ['background-color: #ffe599'] * len(row)
+        elif "RTO" in status:
+            return ['background-color: #ff0000'] * len(row)
+        elif "DELIVERED" not in status and status != "":
+            return ['background-color: #ff00ff'] * len(row)
+        return [''] * len(row)
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        report_df.style.apply(style_report, axis=1).to_excel(writer, index=False, sheet_name='Report')
+    
+    processed_data = output.getvalue()
+
+    st.download_button(
+        label="📥 Download This Month's Report",
+        data=processed_data,
+        file_name=f"Globo_Full_Report_{selected_month}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 else:
-    st.warning(f"Could not find tab '{selected_month}' in the sheets. Please verify the tab names match exactly.")
+    st.warning(f"Could not find tab '{selected_month}' in the sheets.")
