@@ -20,7 +20,6 @@ with t1:
     st.title(f"📊 GLOBO Master Dashboard")
 
 with t2:
-    # Split selection into Month and Year for a cleaner UI
     years = ["2026", "2025", "2024"]
     months_short = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     
@@ -28,12 +27,10 @@ with t2:
     sel_year = f1.selectbox("Year", years)
     sel_month = f2.selectbox("Month", months_short, index=datetime.now().month - 1)
     
-    # Reconstruct for sheet nomenclature (e.g., Jan_2026)
     selected_month = f"{sel_month}_{sel_year}"
 
 def get_master_data(month_tab):
     try:
-        # Secrets Setup
         creds_dict = st.secrets["gcp_service_account"].to_dict()
         raw_key = creds_dict["private_key"]
         header, footer = "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----"
@@ -45,32 +42,28 @@ def get_master_data(month_tab):
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
         client = gspread.authorize(creds)
         
-        # 2. Load Shopify (Master Source)
         shop_id = "1mYk3sh2U9lucFkwoFU-v7dIpdGeiYtYcQrINp--NoU4"
         shop_df = pd.DataFrame(client.open_by_key(shop_id).worksheet(month_tab).get_all_records())
         
-        # 3. Load Shiprocket
         sr_id = "1l7UDY3BFEgxlSmwejfUU6XgbP1k8OOyq5cCJmVNXyuE"
         sr_df = pd.DataFrame(client.open_by_key(sr_id).worksheet(month_tab).get_all_records())
 
         # --- 4. DATA MERGING & MULTI-ID LOGIC ---
-        # Cleaning IDs: Extract only digits to match GLOBO13564 with R_GLOBO13564-C1 etc.
-        def extract_digits(s):
-            match = re.search(r'(\d{5})', str(s))
-            return match.group(1) if match else str(s)
+        # Updated to include "GLOBO" in the matching logic
+        def extract_globo_id(s):
+            match = re.search(r'(GLOBO\d+)', str(s).upper())
+            return match.group(1) if match else str(s).strip()
 
-        shop_df['Match_ID'] = shop_df['Name'].apply(extract_digits)
-        sr_df['Match_ID'] = sr_df['Order ID'].apply(extract_digits)
+        shop_df['Match_ID'] = shop_df['Name'].apply(extract_globo_id)
+        sr_df['Match_ID'] = sr_df['Order ID'].apply(extract_globo_id)
         
-        # Group Shiprocket items into "Sub-rows"
-        # This combines multiple SR orders into single cells separated by newlines
+        # Group Shiprocket items into multi-line strings for sub-row visual
         sr_grouped = sr_df.groupby('Match_ID').agg({
             'Order ID': lambda x: "\n".join(x.astype(str)),
             'AWB Number': lambda x: "\n".join(x.astype(str)),
             'Status': lambda x: "\n".join(x.astype(str))
         }).reset_index()
 
-        # We perform a LEFT JOIN: Shopify is the Master.
         merged = pd.merge(
             shop_df, 
             sr_grouped, 
@@ -78,7 +71,6 @@ def get_master_data(month_tab):
             how='left'
         )
 
-        # Rename columns to match your request
         column_mapping = {
             'Name': 'Order ID (Shopify)',
             'Order ID': 'Shiprocket Order ID',
@@ -92,16 +84,13 @@ def get_master_data(month_tab):
             'Payment Method': 'Payment Method'
         }
         
-        # Filter and Rename for final display
         final_df = merged.rename(columns=column_mapping)
         
-        # Ensure only the columns you asked for are shown (Added Shiprocket Order ID)
         requested_view = [
             'Order ID (Shopify)', 'Shiprocket Order ID', 'AWB Number', 'Shipping Status', 'Subtotal', 
             'Shipping Revenue', 'Taxes', 'Total Revenue', 'Shipping Method', 'Payment Method'
         ]
         
-        # Only display columns if they exist in the sheet
         final_view_cols = [c for c in requested_view if c in final_df.columns]
         
         return final_df[final_view_cols]
@@ -116,7 +105,6 @@ st.info(f"Viewing Month: **{selected_month.replace('_', ' ')}**")
 df = get_master_data(selected_month)
 
 if df is not None:
-    # Key Metrics
     m1, m2, m3 = st.columns(3)
     
     total_rev = pd.to_numeric(df['Total Revenue'], errors='coerce').sum()
@@ -124,16 +112,24 @@ if df is not None:
     m2.metric("Total Revenue", f"₹{total_rev:,.2f}")
     
     if 'Shipping Status' in df:
-        # Note: We check the string content because of the newline-separated sub-rows
         delivered_count = len(df[df['Shipping Status'].str.contains('Delivered', case=False, na=False)])
         m3.metric("Delivered Orders", delivered_count)
 
     st.divider()
     
-    # Table Display
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    # Table Display - use st.write or st.table for better multi-line row support
+    # st.dataframe with st.column_config ensures newlines are rendered as visual breaks
+    st.dataframe(
+        df, 
+        use_container_width=True, 
+        hide_index=True,
+        column_config={
+            "Shiprocket Order ID": st.column_config.TextColumn(width="medium"),
+            "AWB Number": st.column_config.TextColumn(width="medium"),
+            "Shipping Status": st.column_config.TextColumn(width="medium"),
+        }
+    )
     
-    # CSV Download Button
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("📥 Download This Month's Report", csv, f"Globo_{selected_month}.csv", "text/csv")
 
