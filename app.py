@@ -186,14 +186,28 @@ if df is not None:
     st.dataframe(df, use_container_width=True, hide_index=True)
     
     # --- STYLED REPORT DOWNLOAD LOGIC ---
+    # --- UPDATED STYLED REPORT LOGIC ---
     def style_report(row):
+        # We check the new 'Delivery Status' column we created for the report
         status = str(row['Delivery Status']).upper()
-        if "CANCELED" in status:
+        
+        # 1. If it's DELIVERED (including our special cases), keep it white/plain
+        if "DELIVERED" in status:
+            return [''] * len(row)
+            
+        # 2. Highlight Canceled orders in Yellow
+        elif "CANCELED" in status or "CANCELLED" in status:
             return ['background-color: #ffe599'] * len(row)
+            
+        # 3. Highlight RTO in Red
         elif "RTO" in status:
             return ['background-color: #ff0000'] * len(row)
-        elif "DELIVERED" not in status and status != "":
+            
+        # 4. Highlight anything else that isn't empty (In-Transit, etc.) in Magenta
+        elif status.strip() != "" and status != "NAN":
             return ['background-color: #ff00ff'] * len(row)
+            
+        # 5. Default (Empty/Not Found)
         return [''] * len(row)
 
     output = BytesIO()
