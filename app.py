@@ -154,19 +154,29 @@ st.info(f"Viewing Month: **{selected_month.replace('_', ' ')}**")
 df, report_df = get_master_data(selected_month)
 
 if df is not None:
-    # --- CALCULATIONS ---
+    # --- UPDATED CALCULATIONS (Matching Special Case Logic) ---
     df['Total Revenue'] = pd.to_numeric(df['Total Revenue'], errors='coerce').fillna(0)
     total_orders = len(df)
     total_rev = df['Total Revenue'].sum()
     
-    is_delivered = df['Shipping Status'].str.contains('Delivered', case=False, na=False)
-    delivered_df = df[is_delivered]
+    # 1. We create a calculation status that checks the pool for DELIVERED
+    # This ensures Case 1, 2, and 3 are reflected in your Metric Cards
+    def check_delivered_logic(match_id, pool_df):
+        related_stats = pool_df[pool_df['Match_ID'] == match_id]['Status'].astype(str).upper().tolist()
+        return any("DELIVERED" in s for s in related_stats)
+
+    # Apply the logic to find which Shopify Orders are "Logically Delivered"
+    df['Is_Delivered_Logic'] = df['Order ID (Shopify)'].apply(lambda x: extract_globo_id(x)).apply(lambda m: check_delivered_logic(m, sr_df))
+    
+    delivered_df = df[df['Is_Delivered_Logic'] == True]
     delivered_count = len(delivered_df)
     realised_rev = delivered_df['Total Revenue'].sum()
     delivery_perc = (delivered_count / total_orders * 100) if total_orders > 0 else 0
     
     pay_methods = delivered_df.groupby('Payment Method')['Total Revenue'].sum().to_dict()
+    # --- END OF UPDATED CALCULATIONS ---
 
+    
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Shopify Total Orders", total_orders)
     m2.metric("Total Revenue", f"₹{total_rev:,.2f}")
