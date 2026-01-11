@@ -47,8 +47,23 @@ def get_master_data(month_tab):
         shop_df = pd.DataFrame(client.open_by_key(shop_id).worksheet(month_tab).get_all_records())
         
         sr_id = "1l7UDY3BFEgxlSmwejfUU6XgbP1k8OOyq5cCJmVNXyuE"
-        sr_df = pd.DataFrame(client.open_by_key(sr_id).worksheet(month_tab).get_all_records())
-
+        
+        # --- NEW CROSS-MONTH LOGIC START ---
+        sr_book = client.open_by_key(sr_id)
+        all_sr_sheets = sr_book.worksheets()
+        
+        sr_list = []
+        for sheet in all_sr_sheets:
+            # Matches any tab with an underscore like "Jan_2025"
+            if "_" in sheet.title:
+                sheet_data = pd.DataFrame(sheet.get_all_records())
+                if not sheet_data.empty:
+                    sr_list.append(sheet_data)
+        
+        # Combine all months into one big search pool
+        sr_df = pd.concat(sr_list, ignore_index=True) if sr_list else pd.DataFrame()
+        # --- NEW CROSS-MONTH LOGIC END ---
+        
         def extract_globo_id(s):
             match = re.search(r'(GLOBO\d+)', str(s).upper())
             return match.group(1) if match else str(s).strip()
@@ -57,9 +72,9 @@ def get_master_data(month_tab):
         sr_df['Match_ID'] = sr_df['Order ID'].apply(extract_globo_id)
         
         sr_grouped = sr_df.groupby('Match_ID').agg({
-            'Order ID': lambda x: "\n".join(x.astype(str)),
-            'AWB Number': lambda x: "\n".join(x.astype(str)),
-            'Status': lambda x: "\n".join(x.astype(str))
+            'Order ID': lambda x: "\n".join(x.astype(str).unique()),
+            'AWB Number': lambda x: "\n".join(x.astype(str).unique()),
+            'Status': lambda x: "\n".join(x.astype(str).unique())
         }).reset_index()
 
         merged = pd.merge(shop_df, sr_grouped, on='Match_ID', how='left')
