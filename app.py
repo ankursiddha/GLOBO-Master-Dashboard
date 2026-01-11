@@ -105,7 +105,7 @@ def get_master_data(month_tab):
         
         # 21 & 22: Status handling (Using the Fixed Status for the Report)
         report_df['Delivery Status'] = report_df['Report_Status_Fixed']
-        report_df['Secondary Status'] = report_df['Override Shipping Status'] if 'Override Shipping Status' in report_df.columns else """"
+        report_df['Secondary Status'] = report_df['Override Shipping Status'] if 'Override Shipping Status' in report_df.columns else ""
         
         # Define the exact 22 columns requested
         report_cols = [
