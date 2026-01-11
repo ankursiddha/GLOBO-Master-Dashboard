@@ -16,9 +16,10 @@ def extract_globo_id(s):
 def check_delivered_logic(match_id, pool_df):
     if pool_df.empty:
         return False
-    related_stats = pool_df[pool_df['Match_ID'] == match_id]['Status'].astype(str).upper().tolist()
+    # Add .str before .upper() to handle the column correctly
+    related_stats = pool_df[pool_df['Match_ID'] == match_id]['Status'].astype(str).str.upper().tolist()
     return any("DELIVERED" in s for s in related_stats)
-
+    
 # --- 1. GENERATE MONTH LIST ---
 def get_month_options():
     start_date = datetime(2024, 4, 1)
