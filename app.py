@@ -70,21 +70,42 @@ def get_master_data(month_tab):
 
         shop_df['Match_ID'] = shop_df['Name'].apply(extract_globo_id)
         sr_df['Match_ID'] = sr_df['Order ID'].apply(extract_globo_id)
-        
+        # 1. Standard grouping for the Dashboard (Keeps Dashboard exactly as it is now)
         sr_grouped = sr_df.groupby('Match_ID').agg({
             'Order ID': lambda x: "\n".join(x.astype(str).unique()),
             'AWB Number': lambda x: "\n".join(x.astype(str).unique()),
             'Status': lambda x: "\n".join(x.astype(str).unique())
         }).reset_index()
 
+        # 2. CREATE SPECIAL LOGIC FOR DOWNLOAD REPORT ONLY
+        def get_report_specific_status(match_id, current_sr_df):
+            # Filter all Shiprocket rows related to this Match_ID (e.g., GLOBO1234)
+            related_rows = current_sr_df[current_sr_df['Match_ID'] == match_id]
+            
+            # Logic for Case 1: GLOBO1234 and GLOBO1234-C / GLOBO1234-C1
+            # Logic for Case 2: R_GLOBO1234 / R1_GLOBO1234
+            # We look for ANY status containing "DELIVERED" in any related Shiprocket ID
+            statuses = related_rows['Status'].astype(str).str.upper().tolist()
+            
+            if any("DELIVERED" in s for s in statuses):
+                return "DELIVERED"
+            
+            # If no Delivered status found, return the combined raw statuses
+            unique_stats = [s for s in related_rows['Status'].unique() if str(s).strip() != ""]
+            return "\n".join(unique_stats) if unique_stats else "NOT DELIVERED"
+
+        # Apply the special cases logic ONLY for the report data
         merged = pd.merge(shop_df, sr_grouped, on='Match_ID', how='left')
+        
+        # This column is used ONLY for the Excel Download logic
+        merged['Report_Status_Fixed'] = merged['Match_ID'].apply(lambda x: get_report_specific_status(x, sr_df))
 
         # --- PREPARE 22-COLUMN REPORT DATA ---
         report_df = merged.copy()
         
-        # 21 & 22: Status handling
-        report_df['Delivery Status'] = report_df['Status']
-        report_df['Secondary Status'] = report_df['Override Shipping Status'] if 'Override Shipping Status' in report_df.columns else ""
+        # 21 & 22: Status handling (Using the Fixed Status for the Report)
+        report_df['Delivery Status'] = report_df['Report_Status_Fixed']
+        report_df['Secondary Status'] = report_df['Override Shipping Status'] if 'Override Shipping Status' in report_df.columns else """"
         
         # Define the exact 22 columns requested
         report_cols = [
