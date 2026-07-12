@@ -21,40 +21,52 @@ shopify_headers = {
 
 def get_stored_hsn(variant_id):
     """
-    Checks separate local database lookup table for the HSN code first.
-    If it's a new product variant, it pulls it from Shopify and saves it to the lookup table.
+    Checks the local database first. If not found, fetches the correct 
+    inventory item mapping from Shopify to pull the true HSN code.
     """
     if not variant_id:
         return None
         
     try:
-        # Check if we already have this product's HSN in our lookup table
+        # 1. Check if we already mapped this variant in our lookup table
         stored = supabase.table("shopify_product_hsn").select("hsn_code").eq("variant_id", str(variant_id)).execute()
         if stored.data and stored.data[0].get("hsn_code"):
             return stored.data[0]["hsn_code"]
     except Exception as e:
         print(f"Lookup database error for variant {variant_id}: {e}")
         
-    # If not found in our database, make a one-time API call to Shopify to fetch it
-    url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/variants/{variant_id}.json"
+    # 2. If missing, hit the Variant API to grab the hidden Inventory Item Link
+    variant_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/variants/{variant_id}.json"
     try:
-        response = requests.get(url, headers=shopify_headers)
-        if response.status_code == 200:
-            variant = response.json().get("variant", {})
-            hsn = variant.get("harmonized_system_code")
+        v_response = requests.get(variant_url, headers=shopify_headers)
+        if v_response.status_code == 200:
+            variant_data = v_response.json().get("variant", {})
+            inventory_item_id = variant_data.get("inventory_item_id")
+            variant_title = variant_data.get("title") or "Default"
             
-            # Save it to our lookup table so we NEVER have to call the Shopify variant API for this item again
-            supabase.table("shopify_product_hsn").upsert({
-                "variant_id": str(variant_id),
-                "product_title": variant.get("title") or "Unknown Product",
-                "variant_title": variant.get("title") or "Unknown Variant",
-                "hsn_code": hsn
-            }).execute()
-            
-            return hsn
+            if inventory_item_id:
+                # 3. Hit the true Inventory Item API where Shopify hides the HSN code
+                inv_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/inventory_items/{inventory_item_id}.json"
+                inv_response = requests.get(inv_url, headers=shopify_headers)
+                
+                if inv_response.status_code == 200:
+                    inv_data = inv_response.json().get("inventory_item", {})
+                    hsn = inv_data.get("harmonized_system_code") # This is the true HSN string field
+                    
+                    # 4. Save to our local lookup table forever
+                    supabase.table("shopify_product_hsn").upsert({
+                        "variant_id": str(variant_id),
+                        "product_title": variant_data.get("product_id") or "Product",
+                        "variant_title": variant_title,
+                        "hsn_code": hsn
+                    }).execute()
+                    
+                    return hsn
     except Exception as e:
-        print(f"Error fetching variant HSN from Shopify: {e}")
+        print(f"Error extracting true HSN from inventory item line: {e}")
     return None
+
+
 
 def sync_latest_orders():
     # Fetch the 50 most recent orders across all statuses to capture updates/changes
