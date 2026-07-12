@@ -2,16 +2,16 @@ import os
 import requests
 from supabase import create_client, Client
 
-# --- 1. CONFIGURATION & CONNECTIONS ---
-st.set_page_config(page_title="Globo Master Dashboard", layout="wide")
-USERS = {"ANKUR": "120292", "SABINA": "102030", "Prashant": "123456"}"
-SHOPIFY_STORE = "355b0d-2.myshopify.com"  # Replace with your actual store .myshopify.com URL
-SHOPIFY_API_VERSION = "2024-04"                 # Standard stable REST version
-SHOPIFY_TOKEN = os.environ.get("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")
+# --- 1. CONFIGURATION & REAL DEPLOYMENT KEYS ---
+SHOPIFY_STORE = "355b0d-2.myshopify.com"  
+SHOPIFY_API_VERSION = "2024-04"           
 
-SUPABASE_URL = os.environ.get("https://wljftpkvsozgpxivbwiu.supabase.co")
-SUPABASE_KEY = os.environ.get("sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If") # service_role key bypasses RLS safely
+# If keys exist in system environment (GitHub Actions), use them; otherwise fall back to raw keys
+SHOPIFY_TOKEN = os.environ.get("SHOPIFY_ADMIN_TOKEN") or "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"
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.supabase.co"
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
 
+# Initialize Supabase Admin client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 shopify_headers = {
@@ -21,16 +21,19 @@ shopify_headers = {
 
 def get_stored_hsn(variant_id):
     """
-    Checks our separate local database lookup table for the HSN code first.
+    Checks separate local database lookup table for the HSN code first.
     If it's a new product variant, it pulls it from Shopify and saves it to the lookup table.
     """
     if not variant_id:
         return None
         
-    # Check if we already have this product's HSN in our lookup table
-    stored = supabase.table("shopify_product_hsn").select("hsn_code").eq("variant_id", str(variant_id)).execute()
-    if stored.data and stored.data[0].get("hsn_code"):
-        return stored.data[0]["hsn_code"]
+    try:
+        # Check if we already have this product's HSN in our lookup table
+        stored = supabase.table("shopify_product_hsn").select("hsn_code").eq("variant_id", str(variant_id)).execute()
+        if stored.data and stored.data[0].get("hsn_code"):
+            return stored.data[0]["hsn_code"]
+    except Exception as e:
+        print(f"Lookup database error for variant {variant_id}: {e}")
         
     # If not found in our database, make a one-time API call to Shopify to fetch it
     url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/variants/{variant_id}.json"
@@ -43,8 +46,8 @@ def get_stored_hsn(variant_id):
             # Save it to our lookup table so we NEVER have to call the Shopify variant API for this item again
             supabase.table("shopify_product_hsn").upsert({
                 "variant_id": str(variant_id),
-                "product_title": variant.get("title"),
-                "variant_title": variant.get("title"),
+                "product_title": variant.get("title") or "Unknown Product",
+                "variant_title": variant.get("title") or "Unknown Variant",
                 "hsn_code": hsn
             }).execute()
             
@@ -56,13 +59,15 @@ def get_stored_hsn(variant_id):
 def sync_latest_orders():
     # Fetch the 50 most recent orders across all statuses to capture updates/changes
     url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?limit=50&status=any"
+    print(f"Connecting to Shopify API to fetch orders...")
     response = requests.get(url, headers=shopify_headers)
     
     if response.status_code != 200:
-        print(f"Failed to fetch orders from Shopify: {response.text}")
+        print(f"Failed to fetch orders from Shopify: {response.status_code} - {response.text}")
         return
 
     orders = response.json().get("orders", [])
+    print(f"Found {len(orders)} orders to process. Starting sync...")
     
     for order in orders:
         order_id = str(order["id"])
@@ -75,10 +80,10 @@ def sync_latest_orders():
         # --- 2. MAP PARENT ORDER ROWS ---
         parent_order = {
             "order_id": order_id,
-            "name": order["name"],                                # E.g. #GLOBO1001
+            "name": order["name"],                                
             "created_at": order["created_at"],
-            "financial_status": order["financial_status"],        # updates seamlessly from pending -> paid
-            "fulfillment_status": order["fulfillment_status"],    # updates seamlessly from unfulfilled -> fulfilled
+            "financial_status": order["financial_status"],        
+            "fulfillment_status": order["fulfillment_status"],    
             "currency": order["currency"],
             "subtotal": float(order.get("current_subtotal_price", 0)),
             "shipping": float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0)),
@@ -112,7 +117,7 @@ def sync_latest_orders():
                 "lineitem_fulfillment_status": item["fulfillment_status"],
                 "tax_1_name": tax_1_name,
                 "tax_1_value": tax_1_value,
-                "hsn_code": current_hsn  # Locked forever inside this transaction history entry
+                "hsn_code": current_hsn  
             }
             
             # Process item sub-row updates or additions safely
