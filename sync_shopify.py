@@ -3,12 +3,14 @@ import requests
 from supabase import create_client, Client
 
 # --- 1. CONFIGURATION & CONNECTIONS ---
-SHOPIFY_STORE = "your-store-name.myshopify.com"  # Replace with your actual store .myshopify.com URL
+st.set_page_config(page_title="Globo Master Dashboard", layout="wide")
+USERS = {"ANKUR": "120292", "SABINA": "102030", "Prashant": "123456"}"
+SHOPIFY_STORE = "355b0d-2.myshopify.com"  # Replace with your actual store .myshopify.com URL
 SHOPIFY_API_VERSION = "2024-04"                 # Standard stable REST version
-SHOPIFY_TOKEN = os.environ.get("SHOPIFY_ADMIN_TOKEN")
+SHOPIFY_TOKEN = os.environ.get("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")
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") # service_role key bypasses RLS safely
+SUPABASE_URL = os.environ.get("https://wljftpkvsozgpxivbwiu.supabase.co")
+SUPABASE_KEY = os.environ.get("sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If") # service_role key bypasses RLS safely
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
