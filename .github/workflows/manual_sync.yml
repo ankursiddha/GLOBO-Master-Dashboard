@@ -1,0 +1,23 @@
+name: Manual Shopify Sync
+
+on:
+  workflow_dispatch: # Enables manual triggering via button click
+
+jobs:
+  run-sync-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Runtime Libraries
+        run: |
+          pip install requests supabase
+
+      - name: Execute Sync
+        run: python sync_shopify.py
