@@ -7,7 +7,7 @@ SHOPIFY_STORE = "355b0d-2.myshopify.com"
 SHOPIFY_API_VERSION = "2024-04"           
 
 # If keys exist in system environment (GitHub Actions), use them; otherwise fall back to raw keys
-SHOPIFY_TOKEN = os.environ.get("SHOPIFY_ADMIN_TOKEN") or "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"
+SHOPIFY_TOKEN = os.environ.get("SHOPIFY_ADMIN_TOKEN") or "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"
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.supabase.co"
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
 
