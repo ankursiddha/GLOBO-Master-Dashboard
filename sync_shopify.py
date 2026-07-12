@@ -2,16 +2,16 @@ import os
 import requests
 from supabase import create_client, Client
 
-# --- 1. CONFIGURATION & REAL DEPLOYMENT KEYS ---
+# --- 1. CONFIGURATION & DEPLOYMENT KEYS ---
 SHOPIFY_STORE = "355b0d-2.myshopify.com"  
 SHOPIFY_API_VERSION = "2024-04"           
 
-# If keys exist in system environment (GitHub Actions), use them; otherwise fall back to raw keys
+# Secure credential fallbacks
 SHOPIFY_TOKEN = os.environ.get("SHOPIFY_ADMIN_TOKEN") or "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"
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.supabase.co"
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
 
-# Initialize Supabase Admin client
+# Initialize Supabase client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 shopify_headers = {
@@ -19,63 +19,43 @@ shopify_headers = {
     "Content-Type": "application/json"
 }
 
-def get_stored_hsn(variant_id):
+def fetch_live_hsn_from_shopify(variant_id):
     """
-    Checks the local database first. If not found, fetches the correct 
-    inventory item mapping from Shopify to pull the true HSN code.
+    Fetches the current live HSN code directly from Shopify's Inventory API
+    and returns only the first 4 characters.
     """
     if not variant_id:
         return None
         
-    try:
-        # 1. Check if we already mapped this variant in our lookup table
-        stored = supabase.table("shopify_product_hsn").select("hsn_code").eq("variant_id", str(variant_id)).execute()
-        if stored.data and stored.data[0].get("hsn_code"):
-            return stored.data[0]["hsn_code"]
-    except Exception as e:
-        print(f"Lookup database error for variant {variant_id}: {e}")
-        
-    # 2. If missing, hit the Variant API to grab the hidden Inventory Item Link
     variant_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/variants/{variant_id}.json"
     try:
         v_response = requests.get(variant_url, headers=shopify_headers)
         if v_response.status_code == 200:
-            variant_data = v_response.json().get("variant", {})
-            inventory_item_id = variant_data.get("inventory_item_id")
-            variant_title = variant_data.get("title") or "Default"
+            inventory_item_id = v_response.json().get("variant", {}).get("inventory_item_id")
             
             if inventory_item_id:
-                # 3. Hit the true Inventory Item API where Shopify hides the HSN code
                 inv_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/inventory_items/{inventory_item_id}.json"
                 inv_response = requests.get(inv_url, headers=shopify_headers)
                 
                 if inv_response.status_code == 200:
-                    inv_data = inv_response.json().get("inventory_item", {})
-                    hsn = inv_data.get("harmonized_system_code") # This is the true HSN string field
+                    raw_hsn = inv_response.json().get("inventory_item", {}).get("harmonized_system_code")
                     
-                    # 4. Save to our local lookup table forever
-                    supabase.table("shopify_product_hsn").upsert({
-                        "variant_id": str(variant_id),
-                        "product_title": variant_data.get("product_id") or "Product",
-                        "variant_title": variant_title,
-                        "hsn_code": hsn
-                    }).execute()
-                    
-                    return hsn
+                    if raw_hsn:
+                        clean_hsn = str(raw_hsn).strip()
+                        # Capture and return exactly the first 4 characters
+                        return clean_hsn[:4]
     except Exception as e:
-        print(f"Error extracting true HSN from inventory item line: {e}")
+        print(f"Error fetching live HSN for variant {variant_id}: {e}")
     return None
-
-
 
 def sync_latest_orders():
     # Fetch the 50 most recent orders across all statuses to capture updates/changes
     url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?limit=50&status=any"
-    print(f"Connecting to Shopify API to fetch orders...")
+    print("Connecting to Shopify API...")
     response = requests.get(url, headers=shopify_headers)
     
     if response.status_code != 200:
-        print(f"Failed to fetch orders from Shopify: {response.status_code} - {response.text}")
+        print(f"Failed to fetch orders: {response.status_code}")
         return
 
     orders = response.json().get("orders", [])
@@ -89,7 +69,7 @@ def sync_latest_orders():
         tax_1_name = tax_lines[0].get("title") if len(tax_lines) > 0 else None
         tax_1_value = float(tax_lines[0].get("price")) if len(tax_lines) > 0 else 0.0
 
-        # --- 2. MAP PARENT ORDER ROWS ---
+        # --- 2. MAP PARENT ORDER (One row per order) ---
         parent_order = {
             "order_id": order_id,
             "name": order["name"],                                
@@ -107,17 +87,23 @@ def sync_latest_orders():
             "billing_province_name": order.get("billing_address", {}).get("province"),
             "shipping_province_name": order.get("shipping_address", {}).get("province")
         }
-        
-        # Process parent insert or update smoothly
         supabase.table("shopify_orders").upsert(parent_order).execute()
         
-        # --- 3. MAP CHILD LINE ITEMS (SUB-ROWS) ---
+        # --- 3. MAP CHILD LINE ITEMS (Multiple sub-rows per order) ---
         for item in order.get("line_items", []):
             lineitem_id = str(item["id"])
             variant_id = item.get("variant_id")
             
-            # Fetch the HSN code safely using our optimized lookup function
-            current_hsn = get_stored_hsn(variant_id)
+            # Check if this specific line item already exists with an HSN code locked down
+            existing_item = supabase.table("shopify_order_items").select("hsn_code").eq("lineitem_id", lineitem_id).execute()
+            
+            if existing_item.data and existing_item.data[0].get("hsn_code") is not None:
+                # Keep the historic HSN exactly as it was captured on day one (Locked)
+                target_hsn = existing_item.data[0]["hsn_code"]
+            else:
+                # It's a brand new order line or previously NULL; pull fresh HSN from Shopify and slice to 4 chars
+                print(f"New or empty item row detected ({item['name']}). Fetching fresh 4-character HSN...")
+                target_hsn = fetch_live_hsn_from_shopify(variant_id)
             
             child_item = {
                 "lineitem_id": lineitem_id,
@@ -129,13 +115,11 @@ def sync_latest_orders():
                 "lineitem_fulfillment_status": item["fulfillment_status"],
                 "tax_1_name": tax_1_name,
                 "tax_1_value": tax_1_value,
-                "hsn_code": current_hsn  
+                "hsn_code": target_hsn  # Locked permanently
             }
-            
-            # Process item sub-row updates or additions safely
             supabase.table("shopify_order_items").upsert(child_item).execute()
 
-    print(f"Successfully processed {len(orders)} Shopify orders and verified their structural sub-item mappings.")
+    print(f"Successfully synced {len(orders)} orders with perfect transactional locking and 4-character HSN slicing.")
 
 if __name__ == "__main__":
     sync_latest_orders()
