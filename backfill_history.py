@@ -49,8 +49,8 @@ def fetch_live_hsn_from_shopify(variant_id):
     return None
 
 def get_internal_id_from_name(order_name):
-    """Converts your human order name string into Shopify's internal numeric ID."""
-    url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?name={requests.utils.quote(order_name)}&status=any"
+    """Converts your human order name string into Shopify's internal numeric ID using advanced query parameters."""
+    url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?query=name:{requests.utils.quote(order_name)}&status=any"
     res = requests.get(url, headers=shopify_headers)
     if res.status_code == 200 and res.json().get("orders"):
         return res.json()["orders"][0]["id"]
@@ -94,6 +94,12 @@ def run_historical_backfill():
             tax_1_name = tax_lines[0].get("title") if len(tax_lines) > 0 else None
             tax_1_value = float(tax_lines[0].get("price")) if len(tax_lines) > 0 else 0.0
 
+            # --- NEW: Safely extract Shopify's internal shipment status ---
+            fulfillments = order.get("fulfillments", [])
+            shopify_shipment_status = None
+            if fulfillments and len(fulfillments) > 0:
+                shopify_shipment_status = fulfillments[0].get("shipment_status")
+
             # --- MAP PARENT ---
             parent_order = {
                 "order_id": order_id,
@@ -110,10 +116,9 @@ def run_historical_backfill():
                 "shipping_method": order.get("shipping_lines", [{}])[0].get("title") if order.get("shipping_lines") else None,
                 "payment_method": order.get("payment_gateway_names", [None])[0],
                 "billing_province_name": order.get("billing_address", {}).get("province"),
-                "shipping_province_name": order.get("shipping_address", {}).get("province")
-                "delivery_status": shopify_shipment_status, # <--- The mapping happens here!
-                "secondary_status": order.get("cancel_reason") # Uses cancel reason as secondary context if empty
-
+                "shipping_province_name": order.get("shipping_address", {}).get("province"),
+                "delivery_status": shopify_shipment_status,
+                "secondary_status": order.get("cancel_reason"),
             }
             supabase.table("shopify_orders").upsert(parent_order).execute()
             
@@ -139,7 +144,7 @@ def run_historical_backfill():
                     "lineitem_fulfillment_status": item["fulfillment_status"],
                     "tax_1_name": tax_1_name,
                     "tax_1_value": tax_1_value,
-                    "hsn_code": target_hsn
+                    "hsn_code": target_hsn,
                 }
                 supabase.table("shopify_order_items").upsert(child_item).execute()
             
