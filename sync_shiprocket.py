@@ -11,21 +11,6 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def clean_shiprocket_date(date_str):
-    """Converts Shiprocket human date format (e.g., '14th Apr 2025 09:11 PM') into clean ISO timestamp."""
-    if not date_str:
-        return None
-    try:
-        # Strip out text suffixes like 'th', 'st', 'nd', 'rd' from the day number
-        clean_str = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', str(date_str).strip())
-        
-        # Parse standard string: '14 Apr 2025 09:11 PM'
-        parsed_dt = datetime.strptime(clean_str, "%d %b %Y %I:%M %p")
-        return parsed_dt.isoformat()
-    except Exception as e:
-        print(f"Date conversion skip for '{date_str}': {e}")
-        return None
-
 def get_shiprocket_token():
     """Authenticates with Shiprocket to obtain a fresh temporary authorization token."""
     url = "https://apiv2.shiprocket.in/v1/external/auth/login"
@@ -42,8 +27,8 @@ def get_shiprocket_token():
         print(f"Error authenticating with Shiprocket: {e}")
     return None
 
-def sync_latest_shipments():
-    print("Initiating Shiprocket data synchronization...")
+def sync_all_shipments():
+    print("Initiating full paginated Shiprocket historical sync...")
     
     token = get_shiprocket_token()
     if not token:
@@ -55,45 +40,68 @@ def sync_latest_shipments():
         "Authorization": f"Bearer {token}"
     }
     
-    # Fetch the 50 most recent shipments from Shiprocket
-    url = "https://apiv2.shiprocket.in/v1/external/shipments?per_page=50"
-    response = requests.get(url, headers=shiprocket_headers)
+    current_page = 1
+    total_processed = 0
     
-    if response.status_code != 200:
-        print(f"Failed to fetch shipments from Shiprocket: {response.status_code}")
-        return
+    while True:
+        print(f"Fetching page {current_page} from Shiprocket...")
+        url = f"https://apiv2.shiprocket.in/v1/external/shipments?per_page=50&page={current_page}"
         
-    shipments_data = response.json().get("data", [])
-    print(f"Found {len(shipments_data)} shipments to process.")
-    
-for shipment in shipments_data:
-        shipment_id = str(shipment["id"])
-        
-        raw_date = shipment.get("shipment_created_at") or shipment.get("created_at")
-        
-        # Capture the clean readable order number (e.g., GLOBO1001) safely
-        clean_channel_order_id = shipment.get("channel_order_id") or shipment.get("order_no")
-        if not clean_channel_order_id or str(clean_channel_order_id).strip().lower() == "none":
-            # Check if it's nested deep inside an order reference block
-            clean_channel_order_id = shipment.get("order", {}).get("channel_order_id") or "None"
+        try:
+            response = requests.get(url, headers=shiprocket_headers)
+            
+            if response.status_code == 429:
+                print("Hit Shiprocket rate limit. Resting for 10 seconds...")
+                time.sleep(10)
+                continue
+                
+            if response.status_code != 200:
+                print(f"Failed to fetch data for page {current_page}: {response.status_code}")
+                break
+                
+            shipments_data = response.json().get("data", [])
+            
+            # If the page is empty, we have reached the end of history!
+            if not shipments_data:
+                print(f"Reached the end of records. Historical sync finished successfully!")
+                break
+                
+            print(f"Processing {len(shipments_data)} records from page {current_page}...")
+            
+            for shipment in shipments_data:
+                shipment_id = str(shipment["id"])
+                raw_date = shipment.get("shipment_created_at") or shipment.get("created_at")
+                
+                # Capture the clean readable order number (e.g., GLOBO1001) safely
+                clean_channel_order_id = shipment.get("channel_order_id") or shipment.get("order_no")
+                if not clean_channel_order_id or str(clean_channel_order_id).strip().lower() == "none":
+                    clean_channel_order_id = shipment.get("order", {}).get("channel_order_id") or "None"
 
-        mapped_shipment = {
-            "shipment_id": shipment_id,
-            "order_id": str(shipment.get("order_id")) if shipment.get("order_id") else None,
-            "channel_order_id": str(clean_channel_order_id).strip(),
-            "awb_number": shipment.get("awb") or shipment.get("awb_code") or "",
-            "courier_name": shipment.get("courier_name") or shipment.get("courier") or None,
-            "status": shipment.get("status"),
-            "status_code": shipment.get("status_code"),
-            "onboarding_status": shipment.get("onboarding_status"),
-            "created_at": str(raw_date) if raw_date else None
-        }
-        
-        supabase.table("shiprocket_shipments").upsert(mapped_shipment).execute()
-        print(f"Synced shipment: {shipment_id} | Order: {mapped_shipment['channel_order_id']} | AWB: {mapped_shipment['awb_number']}")
-
-
-    print("Shiprocket synchronization cycle completed successfully.")
+                mapped_shipment = {
+                    "shipment_id": shipment_id,
+                    "order_id": str(shipment.get("order_id")) if shipment.get("order_id") else None,
+                    "channel_order_id": str(clean_channel_order_id).strip(),
+                    "awb_number": shipment.get("awb") or shipment.get("awb_code") or "",
+                    "courier_name": shipment.get("courier_name") or shipment.get("courier") or None,
+                    "status": shipment.get("status"),
+                    "status_code": shipment.get("status_code"),
+                    "onboarding_status": shipment.get("onboarding_status"),
+                    "created_at": str(raw_date) if raw_date else None
+                }
+                
+                # Push data straight to Supabase
+                supabase.table("shiprocket_shipments").upsert(mapped_shipment).execute()
+                
+            total_processed += len(shipments_data)
+            print(f"Total shipments tracked so far: {total_processed}")
+            
+            # Move cleanly to the next page index
+            current_page += 1
+            time.sleep(1.0) # Light breathing room between pages to satisfy API rules
+            
+        except Exception as e:
+            print(f"An unexpected crash occurred on page {current_page}: {e}")
+            break
 
 if __name__ == "__main__":
-    sync_latest_shipments()
+    sync_all_shipments()
