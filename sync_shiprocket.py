@@ -13,6 +13,10 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- SAFE HISTORY SLABS (Strict Configuration Limits) ---
+LOCK_DATE_STR = "2024-03-30" 
+START_DATE_STR = "2024-04-01"
+
 def get_token():
     try:
         r = requests.post("https://apiv2.shiprocket.in/v1/external/auth/login",
@@ -24,6 +28,23 @@ def get_token():
         print(f"❌ Shiprocket Authentication Crash: {e}")
     return None
 
+def generate_monthly_blocks(start_str):
+    """Generates clean monthly search slices forward from start date to present day."""
+    start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+    today = datetime.now()
+    
+    current = start_dt.replace(day=1)
+    blocks = []
+    
+    while current <= today:
+        blocks.append(current)
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+            
+    return blocks
+
 def sync_complete_shiprocket_history():
     print("--- 🚀 INITIATING FULL SHIPROCKET TO SUPABASE PRODUCTION ENGINE ---")
     token = get_token()
@@ -33,19 +54,24 @@ def sync_complete_shiprocket_history():
         
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     
-    # Generate identical historic monthly blocks as your working script
-    today = datetime.now()
-    audit_months = []
-    for i in range(3, -1, -1):
-        month_dt = (today.replace(day=1) - timedelta(days=i*30)).replace(day=1)
-        audit_months.append(month_dt)
-
+    lock_dt = datetime.strptime(LOCK_DATE_STR, "%Y-%m-%d")
+    audit_months = generate_monthly_blocks(START_DATE_STR)
     total_synced = 0
 
     for current_month_dt in audit_months:
         tab_name = current_month_dt.strftime("%b_%Y")
-        first_day = current_month_dt.strftime("%Y-%m-%d")
         
+        # Enforce Lock Date Boundary Safeguard
+        if current_month_dt < lock_dt.replace(day=1):
+            print(f"🔒 Skipping block {tab_name} - strictly before Lock Date: {LOCK_DATE_STR}")
+            continue
+
+        # Set up dynamic month starts adjusted to strict starting target boundaries
+        if current_month_dt.strftime("%Y-%m") == START_DATE_STR[:7]:
+            first_day = START_DATE_STR
+        else:
+            first_day = current_month_dt.strftime("%Y-%m-%d")
+            
         if current_month_dt.month == 12:
             nxt = datetime(current_month_dt.year + 1, 1, 1)
         else:
