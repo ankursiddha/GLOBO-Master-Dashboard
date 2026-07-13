@@ -115,8 +115,8 @@ def run_historical_backfill():
                 "outstanding_balance": float(order.get("total_outstanding", 0)),
                 "shipping_method": order.get("shipping_lines", [{}])[0].get("title") if order.get("shipping_lines") else None,
                 "payment_method": order.get("payment_gateway_names", [None])[0] if order.get("payment_gateway_names") else None,
-                "billing_province_name": order.get("billing_address", {}).get("province"),
-                "shipping_province_name": order.get("shipping_address", {}).get("province"),
+                "billing_province_name": order.get("billing_address").get("province") if order.get("billing_address") else None,
+                "shipping_province_name": order.get("shipping_address").get("province") if order.get("shipping_address") else None,
                 "delivery_status": shopify_shipment_status,
                 "secondary_status": order.get("cancel_reason"),
             }
