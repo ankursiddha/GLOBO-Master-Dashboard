@@ -109,6 +109,9 @@ def run_historical_backfill():
                 "payment_method": order.get("payment_gateway_names", [None])[0],
                 "billing_province_name": order.get("billing_address", {}).get("province"),
                 "shipping_province_name": order.get("shipping_address", {}).get("province")
+                "delivery_status": shopify_shipment_status, # <--- The mapping happens here!
+                "secondary_status": order.get("cancel_reason") # Uses cancel reason as secondary context if empty
+
             }
             supabase.table("shopify_orders").upsert(parent_order).execute()
             
