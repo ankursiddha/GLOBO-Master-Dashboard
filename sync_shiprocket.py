@@ -4,7 +4,7 @@ from supabase import create_client, Client
 
 # --- CONFIGURATION & CREDENTIALS ---
 SHIPROCKET_EMAIL = os.environ.get("SHIPROCKET_EMAIL") or "globoretail@gmail.com"
-SHIPROCKET_PASSWORD = os.environ.get("SHIPROCKET_PASSWORD") or "r"7Dcp!Z^Ao8%d!3qD16o8toD@aT*Tdh3P"
+SHIPROCKET_PASSWORD = os.environ.get("SHIPROCKET_PASSWORD") or 'r"7Dcp!Z^Ao8%d!3qD16o8toD@aT*Tdh3P'
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.supabase.co"
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_key"
