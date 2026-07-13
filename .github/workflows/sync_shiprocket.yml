@@ -53,8 +53,8 @@ jobs:
                 print(f"Auth error: {e}")
             return None
 
-        def sync_all_orders():
-            print("--- RUNNING FULL HISTORICAL ORDERS SYNC ENGINE ---")
+        def sync_active_shipments():
+            print("--- RUNNING ACTIVE FILTRATION MOVEMENT ENGINE ---")
             token = get_shiprocket_token()
             if not token:
                 print("Token extraction failed. Sync aborted.")
@@ -65,9 +65,10 @@ jobs:
             total = 0
             
             while True:
-                print(f"Pulling Orders from Page {current_page}...")
-                # Calling the historical orders endpoint instead of active shipments
-                url = f"https://apiv2.shiprocket.in/v1/external/orders?per_page=100&page={current_page}"
+                print(f"Scanning Shipment Records from Page {current_page}...")
+                
+                # Removing strict filtering to query the core fulfillment list directly
+                url = f"https://apiv2.shiprocket.in/v1/external/shipments?per_page=100&page={current_page}"
                 res = requests.get(url, headers=headers)
                 
                 if res.status_code == 429:
@@ -75,68 +76,60 @@ jobs:
                     time.sleep(10)
                     continue
                 if res.status_code != 200:
-                    print(f"Exiting loop. Server responded with code: {res.status_code}")
+                    print(f"Exiting loop. Service code: {res.status_code}")
                     break
                     
-                orders_data = res.json().get("data", [])
-                if not orders_data:
-                    print("All available historical orders synchronized successfully!")
+                shipments_data = res.json().get("data", [])
+                if not shipments_data:
+                    print("All clear! Entire active record set updated successfully.")
                     break
                     
-                for order in orders_data:
-                    order_id = str(order.get("id"))
+                print(f"Processing {len(shipments_data)} rows extracted from page {current_page}...")
+                
+                for s in shipments_data:
+                    shipment_id = str(s["id"])
                     
-                    # Target customer visible order IDs (e.g., GLOBO1001)
-                    channel_order_id = order.get("channel_order_id") or order.get("order_no") or "None"
+                    # Core matching variables
+                    awb = s.get("awb_code") or s.get("awb") or ""
+                    courier = s.get("courier_name") or s.get("courier") or ""
                     
-                    # Look inside the shipments nested block to grab AWB details
-                    shipments = order.get("shipments", [])
-                    shipment_id = None
-                    awb = ""
-                    courier = ""
-                    status = order.get("status")
-                    status_code = order.get("status_code")
-                    
-                    if shipments and len(shipments) > 0:
-                        primary_shipment = shipments[0]
-                        shipment_id = str(primary_shipment.get("id"))
-                        awb = primary_shipment.get("awb") or primary_shipment.get("awb_code") or ""
-                        courier = primary_shipment.get("courier") or primary_shipment.get("courier_name") or ""
-                    
-                    # Fallback key generation if shipment record doesn't exist yet
-                    if not shipment_id:
-                        shipment_id = f"ORD-{order_id}"
+                    # Capture channel name safely
+                    order_name = s.get("order_no") or s.get("channel_order_id")
+                    if not order_name or str(order_name).lower() == "none":
+                        order_name = s.get("order", {}).get("channel_order_id") or "None"
                         
-                    raw_date = order.get("created_at") or order.get("shipment_created_at")
+                    raw_date = s.get("shipment_created_at") or s.get("created_at")
                     
                     mapped = {
                         "shipment_id": shipment_id,
-                        "order_id": order_id,
-                        "channel_order_id": str(channel_order_id).strip(),
+                        "order_id": str(s.get("order_id")) if s.get("order_id") else None,
+                        "channel_order_id": str(order_name).strip(),
                         "awb_number": str(awb).strip(),
                         "courier_name": str(courier).strip() if courier else None,
-                        "status": str(status),
-                        "status_code": int(status_code) if status_code else None,
-                        "onboarding_status": None,
+                        "status": s.get("status"),
+                        "status_code": s.get("status_code"),
+                        "onboarding_status": s.get("onboarding_status"),
                         "created_at": str(raw_date) if raw_date else None
                     }
                     
                     supabase.table("shiprocket_shipments").upsert(mapped).execute()
                 
-                total += len(orders_data)
-                print(f"Page {current_page} completed. Running database total: {total}")
+                total += len(shipments_data)
+                print(f"Page {current_page} saved. Total database rows updated: {total}")
                 
-                # Check pagination metadata to see if another page exists
+                # Force look at the total pages returned by the server response meta
                 meta = res.json().get("meta", {})
-                last_page = meta.get("pagination", {}).get("total_pages", current_page)
-                if current_page >= last_page:
-                    print("Reached the absolute final page of order logs.")
+                pagination = meta.get("pagination", {})
+                total_pages = pagination.get("total_pages", current_page)
+                
+                if current_page >= total_pages:
+                    print(f"Reached absolute page boundary at Page {current_page}.")
                     break
                     
                 current_page += 1
-                time.sleep(1.5)
+                time.sleep(1)
 
         if __name__ == "__main__":
-            sync_all_orders()
+            sync_active_shipments()
         EOF
         python inline_sync.py
