@@ -5,7 +5,7 @@ from supabase import create_client, Client
 
 # --- 1. BACKLOG CONTROLS (Safely wired for GitHub Manual Trigger) ---
 # Reads what you type into the GitHub interface button, defaulting to #GLOBO1001 if blank
-START_ORDER_NAME = os.environ.get("START_ORDER_INPUT") or "#GLOBO1001"
+START_ORDER_NAME = os.environ.get("START_ORDER_INPUT") or "#GLOBO1226"
 BATCH_SIZE = 50                  # Number of orders to pull per API request page
 
 
@@ -114,7 +114,7 @@ def run_historical_backfill():
                 "total": float(order.get("total_price", 0)),
                 "outstanding_balance": float(order.get("total_outstanding", 0)),
                 "shipping_method": order.get("shipping_lines", [{}])[0].get("title") if order.get("shipping_lines") else None,
-                "payment_method": order.get("payment_gateway_names", [None])[0],
+                "payment_method": order.get("payment_gateway_names", [None])[0] if order.get("payment_gateway_names") else None,
                 "billing_province_name": order.get("billing_address", {}).get("province"),
                 "shipping_province_name": order.get("shipping_address", {}).get("province"),
                 "delivery_status": shopify_shipment_status,
