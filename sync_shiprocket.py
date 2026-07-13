@@ -66,29 +66,33 @@ def sync_latest_shipments():
     shipments_data = response.json().get("data", [])
     print(f"Found {len(shipments_data)} shipments to process.")
     
-    for shipment in shipments_data:
+for shipment in shipments_data:
         shipment_id = str(shipment["id"])
         
-        # Check both potential date locations in Shiprocket API schema
         raw_date = shipment.get("shipment_created_at") or shipment.get("created_at")
-        iso_date = clean_shiprocket_date(raw_date)
         
+        # Capture the clean readable order number (e.g., GLOBO1001) safely
+        clean_channel_order_id = shipment.get("channel_order_id") or shipment.get("order_no")
+        if not clean_channel_order_id or str(clean_channel_order_id).strip().lower() == "none":
+            # Check if it's nested deep inside an order reference block
+            clean_channel_order_id = shipment.get("order", {}).get("channel_order_id") or "None"
+
         mapped_shipment = {
             "shipment_id": shipment_id,
             "order_id": str(shipment.get("order_id")) if shipment.get("order_id") else None,
-            "channel_order_id": str(shipment.get("channel_order_id")),
-            "awb_number": shipment.get("awb"),
-            "courier_name": shipment.get("courier"),
+            "channel_order_id": str(clean_channel_order_id).strip(),
+            "awb_number": shipment.get("awb") or shipment.get("awb_code") or "",
+            "courier_name": shipment.get("courier_name") or shipment.get("courier") or None,
             "status": shipment.get("status"),
             "status_code": shipment.get("status_code"),
             "onboarding_status": shipment.get("onboarding_status"),
-            "created_at": iso_date
+            "created_at": str(raw_date) if raw_date else None
         }
         
-        # Save securely to Supabase via Upsert
         supabase.table("shiprocket_shipments").upsert(mapped_shipment).execute()
-        print(f"Synced shipment: {shipment_id} | AWB: {shipment.get('awb')}")
-        
+        print(f"Synced shipment: {shipment_id} | Order: {mapped_shipment['channel_order_id']} | AWB: {mapped_shipment['awb_number']}")
+
+
     print("Shiprocket synchronization cycle completed successfully.")
 
 if __name__ == "__main__":
