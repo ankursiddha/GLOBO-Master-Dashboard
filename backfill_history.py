@@ -3,9 +3,11 @@ import time
 import requests
 from supabase import create_client, Client
 
-# --- 1. BACKLOG CONTROLS (CHANGE THESE TO RESUME OR SHIFT BATCHES) ---
-START_ORDER_NAME = "#GLOBO1001"   # The script will start searching from here onwards
+# --- 1. BACKLOG CONTROLS (Safely wired for GitHub Manual Trigger) ---
+# Reads what you type into the GitHub interface button, defaulting to #GLOBO1001 if blank
+START_ORDER_NAME = os.environ.get("START_ORDER_INPUT") or "#GLOBO1001"
 BATCH_SIZE = 50                  # Number of orders to pull per API request page
+
 
 # --- 2. CONFIGURATION & KEYS ---
 SHOPIFY_STORE = "355b0d-2.myshopify.com"  
