@@ -4,10 +4,8 @@ import requests
 from supabase import create_client, Client
 
 # --- 1. BACKLOG CONTROLS (Safely wired for GitHub Manual Trigger) ---
-# Reads what you type into the GitHub interface button, defaulting to #GLOBO1001 if blank
 START_ORDER_NAME = os.environ.get("START_ORDER_INPUT") or "#GLOBO1226"
 BATCH_SIZE = 50                  # Number of orders to pull per API request page
-
 
 # --- 2. CONFIGURATION & KEYS ---
 SHOPIFY_STORE = "355b0d-2.myshopify.com"  
@@ -26,12 +24,12 @@ shopify_headers = {
 
 def fetch_live_hsn_from_shopify(variant_id):
     """Fetches live HSN directly from Shopify's Inventory API (1st 4 chars)."""
-    if not variant_id:
+    if not variant_id or str(variant_id).strip() == "" or str(variant_id) == "None":
         return None
         
-    variant_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/variants/{variant_id}.json"
+    variant_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/variants/{str(variant_id).strip()}.json"
     try:
-        time.sleep(1.0) # Safe spacing for variants API
+        time.sleep(1.0) # Safe pacing for variants API
         v_response = requests.get(variant_url, headers=shopify_headers)
         if v_response.status_code == 200:
             inventory_item_id = v_response.json().get("variant", {}).get("inventory_item_id")
@@ -50,7 +48,7 @@ def fetch_live_hsn_from_shopify(variant_id):
 
 def get_internal_id_from_name(order_name):
     """Converts your human order name string into Shopify's internal numeric ID using advanced query parameters."""
-    url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?query=name:{requests.utils.quote(order_name)}&status=any"
+    url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?query=name:{requests.utils.quote(str(order_name).strip())}&status=any"
     res = requests.get(url, headers=shopify_headers)
     if res.status_code == 200 and res.json().get("orders"):
         return res.json()["orders"][0]["id"]
@@ -94,7 +92,7 @@ def run_historical_backfill():
             tax_1_name = tax_lines[0].get("title") if len(tax_lines) > 0 else None
             tax_1_value = float(tax_lines[0].get("price")) if len(tax_lines) > 0 else 0.0
 
-            # --- NEW: Safely extract Shopify's internal shipment status ---
+            # --- Safely extract Shopify's internal shipment status ---
             fulfillments = order.get("fulfillments", [])
             shopify_shipment_status = None
             if fulfillments and len(fulfillments) > 0:
