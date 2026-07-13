@@ -1,7 +1,7 @@
 name: Live Shiprocket Data Sync
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Gives you the manual "Run workflow" trigger button
 
 jobs:
   run-shiprocket-sync:
@@ -21,115 +21,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests supabase
 
-    - name: Execute Inline Sync Engine
+    - name: Execute Verified Sync Engine
       env:
         SHIPROCKET_EMAIL: ${{ secrets.SHIPROCKET_EMAIL }}
         SHIPROCKET_PASSWORD: ${{ secrets.SHIPROCKET_PASSWORD }}
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       run: |
-        cat << 'EOF' > inline_sync.py
-        import os
-        import time
-        import requests
-        from supabase import create_client, Client
-
-        # --- VERIFIED CONFIGURATION & CREDENTIALS ---
-        SHIPROCKET_EMAIL = os.environ.get("SHIPROCKET_EMAIL") or "globoretail@gmail.com"
-        SHIPROCKET_PASSWORD = os.environ.get("SHIPROCKET_PASSWORD") or '8HBSa3WKrk$wWRxo@BYaZTzhdYzAh^pq'
-        SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.supabase.co"
-        SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
-
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-        def get_shiprocket_token():
-            url = "https://apiv2.shiprocket.in/v1/external/auth/login"
-            payload = {"email": SHIPROCKET_EMAIL, "password": SHIPROCKET_PASSWORD}
-            try:
-                res = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
-                if res.status_code == 200:
-                    return res.json().get("token")
-            except Exception as e:
-                print(f"Auth error: {e}")
-            return None
-
-        def sync_active_shipments():
-            print("--- RUNNING ACTIVE FILTRATION MOVEMENT ENGINE ---")
-            token = get_shiprocket_token()
-            if not token:
-                print("Token extraction failed. Sync aborted.")
-                return
-            
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-            current_page = 1
-            total = 0
-            
-            while True:
-                print(f"Scanning Shipment Records from Page {current_page}...")
-                
-                # Removing strict filtering to query the core fulfillment list directly
-                url = f"https://apiv2.shiprocket.in/v1/external/shipments?per_page=100&page={current_page}"
-                res = requests.get(url, headers=headers)
-                
-                if res.status_code == 429:
-                    print("Rate limit hit. Sleeping 10s...")
-                    time.sleep(10)
-                    continue
-                if res.status_code != 200:
-                    print(f"Exiting loop. Service code: {res.status_code}")
-                    break
-                    
-                shipments_data = res.json().get("data", [])
-                if not shipments_data:
-                    print("All clear! Entire active record set updated successfully.")
-                    break
-                    
-                print(f"Processing {len(shipments_data)} rows extracted from page {current_page}...")
-                
-                for s in shipments_data:
-                    shipment_id = str(s["id"])
-                    
-                    # Core matching variables
-                    awb = s.get("awb_code") or s.get("awb") or ""
-                    courier = s.get("courier_name") or s.get("courier") or ""
-                    
-                    # Capture channel name safely
-                    order_name = s.get("order_no") or s.get("channel_order_id")
-                    if not order_name or str(order_name).lower() == "none":
-                        order_name = s.get("order", {}).get("channel_order_id") or "None"
-                        
-                    raw_date = s.get("shipment_created_at") or s.get("created_at")
-                    
-                    mapped = {
-                        "shipment_id": shipment_id,
-                        "order_id": str(s.get("order_id")) if s.get("order_id") else None,
-                        "channel_order_id": str(order_name).strip(),
-                        "awb_number": str(awb).strip(),
-                        "courier_name": str(courier).strip() if courier else None,
-                        "status": s.get("status"),
-                        "status_code": s.get("status_code"),
-                        "onboarding_status": s.get("onboarding_status"),
-                        "created_at": str(raw_date) if raw_date else None
-                    }
-                    
-                    supabase.table("shiprocket_shipments").upsert(mapped).execute()
-                
-                total += len(shipments_data)
-                print(f"Page {current_page} saved. Total database rows updated: {total}")
-                
-                # Force look at the total pages returned by the server response meta
-                meta = res.json().get("meta", {})
-                pagination = meta.get("pagination", {})
-                total_pages = pagination.get("total_pages", current_page)
-                
-                if current_page >= total_pages:
-                    print(f"Reached absolute page boundary at Page {current_page}.")
-                    break
-                    
-                current_page += 1
-                time.sleep(1)
-
-        if __name__ == "__main__":
-            sync_active_shipments()
-        EOF
-        python inline_sync.py
+        python shiprocket_sync.py
