@@ -37,7 +37,6 @@ jobs:
         # --- VERIFIED CONFIGURATION & CREDENTIALS ---
         SHIPROCKET_EMAIL = os.environ.get("SHIPROCKET_EMAIL") or "globoretail@gmail.com"
         SHIPROCKET_PASSWORD = os.environ.get("SHIPROCKET_PASSWORD") or '8HBSa3WKrk$wWRxo@BYaZTzhdYzAh^pq'
-
         SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.supabase.co"
         SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
 
@@ -50,14 +49,12 @@ jobs:
                 res = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
                 if res.status_code == 200:
                     return res.json().get("token")
-                else:
-                    print(f"Auth failed status: {res.status_code} | Msg: {res.text}")
             except Exception as e:
                 print(f"Auth error: {e}")
             return None
 
-        def sync_all():
-            print("--- RUNNING FORCED INLINE HISTORICAL ENGINE ---")
+        def sync_all_orders():
+            print("--- RUNNING FULL HISTORICAL ORDERS SYNC ENGINE ---")
             token = get_shiprocket_token()
             if not token:
                 print("Token extraction failed. Sync aborted.")
@@ -68,8 +65,9 @@ jobs:
             total = 0
             
             while True:
-                print(f"Pulling records from Page {current_page}...")
-                url = f"https://apiv2.shiprocket.in/v1/external/shipments?per_page=50&page={current_page}"
+                print(f"Pulling Orders from Page {current_page}...")
+                # Calling the historical orders endpoint instead of active shipments
+                url = f"https://apiv2.shiprocket.in/v1/external/orders?per_page=100&page={current_page}"
                 res = requests.get(url, headers=headers)
                 
                 if res.status_code == 429:
@@ -77,48 +75,68 @@ jobs:
                     time.sleep(10)
                     continue
                 if res.status_code != 200:
-                    print(f"End of records or error encountered: {res.status_code}")
+                    print(f"Exiting loop. Server responded with code: {res.status_code}")
                     break
                     
-                shipments = res.json().get("data", [])
-                if not shipments:
-                    print("All historical shipments synchronized successfully!")
+                orders_data = res.json().get("data", [])
+                if not orders_data:
+                    print("All available historical orders synchronized successfully!")
                     break
                     
-                for s in shipments:
-                    shipment_id = str(s["id"])
+                for order in orders_data:
+                    order_id = str(order.get("id"))
                     
-                    # Extract fields checking deep payload variants
-                    awb = s.get("awb_code") or s.get("awb") or ""
-                    courier = s.get("courier_name") or s.get("courier") or ""
+                    # Target customer visible order IDs (e.g., GLOBO1001)
+                    channel_order_id = order.get("channel_order_id") or order.get("order_no") or "None"
                     
-                    # Target customer visible strings (e.g., GLOBO1001)
-                    order_name = s.get("order_no") or s.get("channel_order_id")
-                    if not order_name or str(order_name).lower() == "none":
-                        order_name = s.get("order", {}).get("channel_order_id") or "None"
+                    # Look inside the shipments nested block to grab AWB details
+                    shipments = order.get("shipments", [])
+                    shipment_id = None
+                    awb = ""
+                    courier = ""
+                    status = order.get("status")
+                    status_code = order.get("status_code")
+                    
+                    if shipments and len(shipments) > 0:
+                        primary_shipment = shipments[0]
+                        shipment_id = str(primary_shipment.get("id"))
+                        awb = primary_shipment.get("awb") or primary_shipment.get("awb_code") or ""
+                        courier = primary_shipment.get("courier") or primary_shipment.get("courier_name") or ""
+                    
+                    # Fallback key generation if shipment record doesn't exist yet
+                    if not shipment_id:
+                        shipment_id = f"ORD-{order_id}"
                         
-                    raw_date = s.get("shipment_created_at") or s.get("created_at")
+                    raw_date = order.get("created_at") or order.get("shipment_created_at")
                     
                     mapped = {
                         "shipment_id": shipment_id,
-                        "order_id": str(s.get("order_id")) if s.get("order_id") else None,
-                        "channel_order_id": str(order_name).strip(),
+                        "order_id": order_id,
+                        "channel_order_id": str(channel_order_id).strip(),
                         "awb_number": str(awb).strip(),
                         "courier_name": str(courier).strip() if courier else None,
-                        "status": s.get("status"),
-                        "status_code": s.get("status_code"),
-                        "onboarding_status": s.get("onboarding_status"),
+                        "status": str(status),
+                        "status_code": int(status_code) if status_code else None,
+                        "onboarding_status": None,
                         "created_at": str(raw_date) if raw_date else None
                     }
                     
                     supabase.table("shiprocket_shipments").upsert(mapped).execute()
                 
-                total += len(shipments)
+                total += len(orders_data)
                 print(f"Page {current_page} completed. Running database total: {total}")
+                
+                # Check pagination metadata to see if another page exists
+                meta = res.json().get("meta", {})
+                last_page = meta.get("pagination", {}).get("total_pages", current_page)
+                if current_page >= last_page:
+                    print("Reached the absolute final page of order logs.")
+                    break
+                    
                 current_page += 1
-                time.sleep(1)
+                time.sleep(1.5)
 
         if __name__ == "__main__":
-            sync_all()
+            sync_all_orders()
         EOF
         python inline_sync.py
