@@ -28,7 +28,8 @@ def get_shiprocket_token():
     return None
 
 def sync_all_shipments():
-    print("Initiating full paginated Shiprocket historical sync...")
+    # Notice this distinct print line so we know the new code is running!
+    print("--- STARTING NEW PAGINATED HISTORICAL SYNC ENGINE ---")
     
     token = get_shiprocket_token()
     if not token:
@@ -61,7 +62,6 @@ def sync_all_shipments():
                 
             shipments_data = response.json().get("data", [])
             
-            # If the page is empty, we have reached the end of history!
             if not shipments_data:
                 print(f"Reached the end of records. Historical sync finished successfully!")
                 break
@@ -72,16 +72,19 @@ def sync_all_shipments():
                 shipment_id = str(shipment["id"])
                 raw_date = shipment.get("shipment_created_at") or shipment.get("created_at")
                 
-                # Capture the clean readable order number (e.g., GLOBO1001) safely
+                # Check all hidden locations for the GLOBO order names
                 clean_channel_order_id = shipment.get("channel_order_id") or shipment.get("order_no")
                 if not clean_channel_order_id or str(clean_channel_order_id).strip().lower() == "none":
                     clean_channel_order_id = shipment.get("order", {}).get("channel_order_id") or "None"
 
+                # Check multiple fields for the AWB number
+                awb = shipment.get("awb") or shipment.get("awb_code") or ""
+                
                 mapped_shipment = {
                     "shipment_id": shipment_id,
                     "order_id": str(shipment.get("order_id")) if shipment.get("order_id") else None,
                     "channel_order_id": str(clean_channel_order_id).strip(),
-                    "awb_number": shipment.get("awb") or shipment.get("awb_code") or "",
+                    "awb_number": str(awb).strip(),
                     "courier_name": shipment.get("courier_name") or shipment.get("courier") or None,
                     "status": shipment.get("status"),
                     "status_code": shipment.get("status_code"),
@@ -89,15 +92,14 @@ def sync_all_shipments():
                     "created_at": str(raw_date) if raw_date else None
                 }
                 
-                # Push data straight to Supabase
+                # Push data to Supabase
                 supabase.table("shiprocket_shipments").upsert(mapped_shipment).execute()
                 
             total_processed += len(shipments_data)
             print(f"Total shipments tracked so far: {total_processed}")
             
-            # Move cleanly to the next page index
             current_page += 1
-            time.sleep(1.0) # Light breathing room between pages to satisfy API rules
+            time.sleep(1.0)
             
         except Exception as e:
             print(f"An unexpected crash occurred on page {current_page}: {e}")
