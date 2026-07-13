@@ -69,8 +69,8 @@ def sync_latest_shipments():
     for shipment in shipments_data:
         shipment_id = str(shipment["id"])
         
-        # Safe extraction and conversion of created_at date format
-        raw_date = shipment.get("created_at")
+        # Check both potential date locations in Shiprocket API schema
+        raw_date = shipment.get("shipment_created_at") or shipment.get("created_at")
         iso_date = clean_shiprocket_date(raw_date)
         
         mapped_shipment = {
@@ -92,5 +92,4 @@ def sync_latest_shipments():
     print("Shiprocket synchronization cycle completed successfully.")
 
 if __name__ == "__main__":
-    sync_latest_shipments()
     sync_latest_shipments()
