@@ -1,7 +1,7 @@
 name: Live Shiprocket Data Sync
 
 on:
-  workflow_dispatch: # Gives you the manual "Run workflow" trigger button
+  workflow_dispatch:
 
 jobs:
   run-shiprocket-sync:
