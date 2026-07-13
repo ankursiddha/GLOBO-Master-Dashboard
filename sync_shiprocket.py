@@ -11,6 +11,21 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def clean_shiprocket_date(date_str):
+    """Converts Shiprocket human date format (e.g., '14th Apr 2025 09:11 PM') into clean ISO timestamp."""
+    if not date_str:
+        return None
+    try:
+        # Strip out text suffixes like 'th', 'st', 'nd', 'rd' from the day number
+        clean_str = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', str(date_str).strip())
+        
+        # Parse standard string: '14 Apr 2025 09:11 PM'
+        parsed_dt = datetime.strptime(clean_str, "%d %b %Y %I:%M %p")
+        return parsed_dt.isoformat()
+    except Exception as e:
+        print(f"Date conversion skip for '{date_str}': {e}")
+        return None
+
 def get_shiprocket_token():
     """Authenticates with Shiprocket to obtain a fresh temporary authorization token."""
     url = "https://apiv2.shiprocket.in/v1/external/auth/login"
@@ -54,7 +69,10 @@ def sync_latest_shipments():
     for shipment in shipments_data:
         shipment_id = str(shipment["id"])
         
-        # Pull out structural cross-referencing information smoothly
+        # Safe extraction and conversion of created_at date format
+        raw_date = shipment.get("created_at")
+        iso_date = clean_shiprocket_date(raw_date)
+        
         mapped_shipment = {
             "shipment_id": shipment_id,
             "order_id": str(shipment.get("order_id")) if shipment.get("order_id") else None,
@@ -64,7 +82,7 @@ def sync_latest_shipments():
             "status": shipment.get("status"),
             "status_code": shipment.get("status_code"),
             "onboarding_status": shipment.get("onboarding_status"),
-            "created_at": shipment.get("created_at")
+            "created_at": iso_date
         }
         
         # Save securely to Supabase via Upsert
@@ -74,4 +92,5 @@ def sync_latest_shipments():
     print("Shiprocket synchronization cycle completed successfully.")
 
 if __name__ == "__main__":
+    sync_latest_shipments()
     sync_latest_shipments()
