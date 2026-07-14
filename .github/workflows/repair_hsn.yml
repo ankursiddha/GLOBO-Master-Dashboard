@@ -1,0 +1,25 @@
+name: Repair Missing HSN Codes
+
+on:
+  workflow_dispatch: # Adds the manual "Run workflow" button in GitHub
+
+jobs:
+  repair-hsn:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out repository code
+      uses: actions/checkout@v4
+
+    - name: Set up Python Engine
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Required Libraries
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests supabase
+
+    - name: Run HSN Repair Script
+      run: python repair_items_hsn.py
