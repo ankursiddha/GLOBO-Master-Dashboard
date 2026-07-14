@@ -66,26 +66,28 @@ def sync_master_reporting_table():
 
     # 2. Pre-Scan Source Data for Immediate System Warnings
     print("\n--- 🩺 PHASE 1: PRE-SCANNING SOURCE DATASETS FOR INVALID FLOATS ---")
-    numeric_order_cols = ["subtotal_price", "total_shipping_price_set", "total_tax", "total_price", "outstanding_balance"]
+    numeric_order_cols = ["subtotal_price", "subtotal", "total_shipping_price_set", "shipping", "total_tax", "taxes", "total_price", "total", "outstanding_balance"]
     numeric_item_cols = ["tax_1_value", "lineitem_price"]
     
     order_nan_count = 0
     for _, row in df_orders.iterrows():
         for col in numeric_order_cols:
-            val = pd.to_numeric(row.get(col), errors='coerce')
-            if is_invalid_value(val):
-                order_nan_count += 1
-                if order_nan_count <= 10:  # Cap printout size to avoid log overload
-                    print(f"  ⚠️ SOURCE WARNING [shopify_orders]: Order Name: {row.get('name')} has invalid float/NaN in column: '{col}'")
+            if col in row:
+                val = pd.to_numeric(row.get(col), errors='coerce')
+                if is_invalid_value(val):
+                    order_nan_count += 1
+                    if order_nan_count <= 5:
+                        print(f"  ⚠️ SOURCE WARNING [shopify_orders]: Order Name: {row.get('name')} has invalid float/NaN in column: '{col}'")
                     
     item_nan_count = 0
     for _, row in df_items.iterrows():
         for col in numeric_item_cols:
-            val = pd.to_numeric(row.get(col), errors='coerce')
-            if is_invalid_value(val):
-                item_nan_count += 1
-                if item_nan_count <= 10:
-                    print(f"  ⚠️ SOURCE WARNING [shopify_order_items]: Item ID: {row.get('lineitem_id')} (Order ID: {row.get('order_id')}) has invalid float/NaN in column: '{col}'")
+            if col in row:
+                val = pd.to_numeric(row.get(col), errors='coerce')
+                if is_invalid_value(val):
+                    item_nan_count += 1
+                    if item_nan_count <= 5:
+                        print(f"  ⚠️ SOURCE WARNING [shopify_order_items]: Item ID: {row.get('lineitem_id')} has invalid float/NaN in column: '{col}'")
 
     print(f"📊 Pre-Scan Summary: Found {order_nan_count} illegal fields in shopify_orders and {item_nan_count} in shopify_order_items.")
 
@@ -109,6 +111,16 @@ def sync_master_reporting_table():
             
         max_sub_rows = max(len(o_items), len(o_ships), 1)
         
+        # Smart Dynamic Column Mapping to bypass case and name mismatches
+        subtotal = order.get("subtotal_price") if order.get("subtotal_price") is not None else order.get("subtotal")
+        shipping = order.get("total_shipping_price_set") if order.get("total_shipping_price_set") is not None else order.get("shipping")
+        taxes = order.get("total_tax") if order.get("total_tax") is not None else order.get("taxes")
+        total = order.get("total_price") if order.get("total_price") is not None else order.get("total")
+        
+        b_province = order.get("billing_address_province") if order.get("billing_address_province") is not None else order.get("billing_province_name")
+        s_province = order.get("shipping_address_province") if order.get("shipping_address_province") is not None else order.get("shipping_province_name")
+        pay_mode = order.get("gateway") if order.get("gateway") is not None else order.get("payment_mode")
+
         for i in range(max_sub_rows):
             row_data = {
                 "shopify_order_id": str(order_id),
@@ -120,20 +132,20 @@ def sync_master_reporting_table():
                 "Financial Status": order.get("financial_status"),
                 "Fulfillment Status": order.get("fulfillment_status"),
                 "Currency": order.get("currency"),
-                "Subtotal": pd.to_numeric(order.get("subtotal_price"), errors='coerce'),
-                "Shipping": pd.to_numeric(order.get("total_shipping_price_set"), errors='coerce'),
-                "Taxes": pd.to_numeric(order.get("total_tax"), errors='coerce'),
-                "Total": pd.to_numeric(order.get("total_price"), errors='coerce'),
+                "Subtotal": pd.to_numeric(subtotal, errors='coerce'),
+                "Shipping": pd.to_numeric(shipping, errors='coerce'),
+                "Taxes": pd.to_numeric(taxes, errors='coerce'),
+                "Total": pd.to_numeric(total, errors='coerce'),
                 "Shipping Method": order.get("shipping_method"),
                 "Outstanding Balance": pd.to_numeric(order.get("outstanding_balance"), errors='coerce'),
                 "Tax 1 Name": None,
-                "Tax 1 Value": pd.to_numeric(None, errors='coerce'),
-                "Billing Province Name": order.get("billing_address_province"),
-                "Shipping Province Name": order.get("shipping_address_province"),
-                "Payment Mode": order.get("gateway"),
+                "Tax 1 Value": None,
+                "Billing Province Name": b_province,
+                "Shipping Province Name": s_province,
+                "Payment Mode": pay_mode,
                 "Lineitem name": None,
                 "Lineitem quantity": None,
-                "Lineitem price": pd.to_numeric(None, errors='coerce'),
+                "Lineitem price": None,
                 "HSN CODE": None,
                 "SHOPIFY DELIVERY STATUS": order.get("delivery_status"),
                 "awb number": None,
@@ -168,16 +180,12 @@ def sync_master_reporting_table():
     numeric_keys_to_verify = ["Subtotal", "Shipping", "Taxes", "Total", "Outstanding Balance", "Tax 1 Value", "Lineitem price"]
     
     for idx, row in enumerate(compiled_rows):
-        has_error_in_row = False
         for key in numeric_keys_to_verify:
             val = row[key]
             if is_invalid_value(val):
                 payload_nan_errors += 1
-                has_error_in_row = True
-                if payload_nan_errors <= 15:
-                    print(f"  🚨 JSON CRITICAL FAULT at Processed Row index {idx} | Order: {row['Name']} | Key: '{key}' has value '{val}' (Illegal Float)")
-                
-                # Convert the bad value specifically to None for debugging visibility, tracking the location
+                if payload_nan_errors <= 5:
+                    print(f"  🚨 JSON CRITICAL FAULT at Processed Row index {idx} | Order: {row['Name']} | Key: '{key}' has value '{val}'")
                 row[key] = None
                 
         checked_cleaned_rows.append(row)
@@ -200,6 +208,6 @@ def sync_master_reporting_table():
             print(f" ❌ Database write blocked at index block {idx}: {e}")
             
     print("\n🎉 Processed ledger optimization engine run complete.")
-
+    
 if __name__ == "__main__":
     sync_master_reporting_table()
