@@ -88,7 +88,7 @@ def repair_item_level_hsn():
         print(f"Processing Item Variant {variant_id} for Order {order_id}...")
         
         # 2. Get the real 4-digit HSN code from the Inventory setup
-        hsn_4 = get_4_char_hsn(variant_id)
+        hsn_4 = get_4_char_hsn(variant_id, order_id=order_id)
         
         if hsn_4:
             try:
