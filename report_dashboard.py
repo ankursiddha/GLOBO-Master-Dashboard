@@ -2,7 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime
+import io
 from supabase import create_client, Client
+import openpyxl
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 
 # --- PRODUCTION AUTHENTICATION ---
 SUPABASE_URL = "https://wljftpkvsozgpxivbwiu.supabase.co"
@@ -41,42 +44,178 @@ def fetch_prebuilt_ledger(start_iso, end_iso):
         df["created_at_dt"] = pd.to_datetime(df["Created at"], errors='coerce').dt.tz_localize(None)
     return df
 
-def apply_hierarchical_excel_formatting(df):
-    """
-    Transforms fully filled database rows into a structured invoice style layout.
-    Presents order level values ONLY on the first line, leaving sub-row columns blank.
-    """
-    if df.empty:
-        return df
+# Columns mapped out strictly based on your specified sample layout template
+EXPORT_COLUMNS = [
+    "Serial No", "Name", "SR Order ID", "Created at", "Financial Status", "Fulfillment Status",
+    "Currency", "Subtotal", "Shipping", "Taxes", "Total", "Shipping Method",
+    "Outstanding Balance", "Tax 1 Name", "Tax 1 Value", "Billing Province Name",
+    "Shipping Province Name", "Payment Mode", "Lineitem name", "Lineitem quantity",
+    "Lineitem price", "HSN CODE", "SHOPIFY DELIVERY STATUS", "awb number", "SHIPROCKET DELIVERY STATUS"
+]
 
-    # 1. Sort sequentially by original database timestamps (newest orders first)
-    # Inside each order, sort by tracking/lineitem details to preserve sub-row pairing structure
-    df = df.sort_values(by=["Created at", "shopify_lineitem_id", "shiprocket_shipment_id"], ascending=[False, True, True])
+MASTER_COLS = [
+    "Serial No", "Name", "Created at", "Financial Status", "Fulfillment Status", 
+    "Currency", "Subtotal", "Shipping", "Taxes", "Total", "Shipping Method", 
+    "Outstanding Balance", "Billing Province Name", "Shipping Province Name", "Payment Mode"
+]
 
-    # 2. Add an explicit sequential Serial Number sequence mapping to unique orders
+def generate_excel_with_merged_cells(raw_df):
+    """
+    Generates a professionally styled binary .xlsx file where all shared master order level 
+    columns are physically merged into tall visual cells using openpyxl.
+    """
+    # Sort data layout sequentially to bundle families
+    df = raw_df.sort_values(by=["Created at", "shopify_lineitem_id", "shiprocket_shipment_id"], ascending=[False, True, True]).copy()
+    
     unique_orders = df["Name"].unique()
-    order_to_serial = {name: float(idx + 1) for idx, name in enumerate(unique_orders)}
+    order_to_serial = {name: idx + 1 for idx, name in enumerate(unique_orders)}
     df["Serial No"] = df["Name"].map(order_to_serial)
-
-    # 3. Identify all structural master columns that must remain blank on sub-rows
-    master_cols = [
-        "Serial No", "Name", "Created at", "Financial Status", "Fulfillment Status", 
-        "Currency", "Subtotal", "Shipping", "Taxes", "Total", "Shipping Method", 
-        "Outstanding Balance", "Billing Province Name", "Shipping Province Name", "Payment Mode"
-    ]
-
-    # Ensure all target columns exist in data matrix safely
-    for col in master_cols:
+    
+    for col in EXPORT_COLUMNS:
         if col not in df.columns:
             df[col] = np.nan
+            
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Order Report"
+    
+    # 1. Styling Definitions
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    data_font = Font(name="Calibri", size=11)
+    
+    thin_side = Side(border_style="thin", color="D9D9D9")
+    cell_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    
+    # Write Headers
+    ws.append(EXPORT_COLUMNS)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = center_align
+    
+    # Track grouping clusters to trigger physical mergers
+    order_groups = []
+    current_order = None
+    start_row = 2
+    
+    for idx, row in df.iterrows():
+        row_data = [None if pd.isna(row.get(c)) else row.get(c) for c in EXPORT_COLUMNS]
+        ws.append(row_data)
+        current_row_idx = ws.max_row
+        
+        # Apply style to added row cells
+        for col_idx in range(1, len(EXPORT_COLUMNS) + 1):
+            cell = ws.cell(row=current_row_idx, column=col_idx)
+            cell.font = data_font
+            cell.border = cell_border
+            # Choose clean left alignment for labels, center for tracking metrics/codes
+            if EXPORT_COLUMNS[col_idx-1] in ["Name", "Lineitem name"]:
+                cell.alignment = left_align
+            else:
+                cell.alignment = center_align
+                
+        # Calculate row boundaries for order clusters
+        order_name = row.get("Name")
+        if current_order is None:
+            current_order = order_name
+            start_row = current_row_idx
+        elif order_name != current_order:
+            order_groups.append((start_row, current_row_idx - 1))
+            current_order = order_name
+            start_row = current_row_idx
+            
+    if current_order is not None:
+        order_groups.append((start_row, ws.max_row))
+        
+    # Execute physical merges cell-by-cell over calculated index matrices
+    for s_row, e_row in order_groups:
+        if s_row == e_row:
+            continue
+        for col_name in MASTER_COLS:
+            col_idx = EXPORT_COLUMNS.index(col_name) + 1
+            ws.merge_cells(start_row=s_row, start_column=col_idx, end_row=e_row, end_column=col_idx)
+            
+            # Re-ensure top-level vertical centering is preserved over newly merged configurations
+            master_cell = ws.cell(row=s_row, column=col_idx)
+            master_cell.alignment = center_align
 
-    # 4. Loop backwards or track duplicates to clear trailing order level cell content
-    # Group by 'Name' and clear out duplicate values for all rows except the first row in the group
-    df[master_cols] = df.groupby("Name")[master_cols].transform(lambda x: x.mask(x.index != x.index[0]))
+    # Auto-fit structural column sizing widths neatly
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or '')) for cell in col)
+        col_letter = openpyxl.utils.get_column_letter(col[0].column)
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+        
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
 
-    return df
+def render_html_merged_dashboard(raw_df):
+    """
+    Compiles standard data matrices directly into an HTML data table, using 
+    rowspan attributes to beautifully render merged blocks natively on the screen.
+    """
+    df = raw_df.sort_values(by=["Created at", "shopify_lineitem_id", "shiprocket_shipment_id"], ascending=[False, True, True]).copy()
+    unique_orders = df["Name"].unique()
+    order_to_serial = {name: idx + 1 for idx, name in enumerate(unique_orders)}
+    df["Serial No"] = df["Name"].map(order_to_serial)
+    
+    # Calculate exact lifespan counts per order to set structural rowspans
+    order_counts = df["Name"].value_counts().to_dict()
+    seen_orders = set()
+    
+    html = """
+    <style>
+        .merged-table { width: 100%; border-collapse: collapse; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-size: 13px; }
+        .merged-table th { background-color: #1F4E78; color: white; padding: 10px; border: 1px solid #D9D9D9; position: sticky; top: 0; }
+        .merged-table td { padding: 8px; border: 1px solid #E2E8F0; vertical-align: middle; text-align: center; background-color: #FFFFFF; }
+        .merged-table .left-align { text-align: left; }
+        .merged-table tr:hover td { background-color: #F8FAFC !important; }
+    </style>
+    <div style="overflow-x: auto; max-height: 600px; border: 1px solid #CBD5E1; border-radius: 6px;">
+    <table class="merged-table">
+        <thead>
+            <tr>
+    """
+    for col in EXPORT_COLUMNS:
+        html += f"<th>{col}</th>"
+    html += "</tr></thead><tbody>"
+    
+    for _, row in df.iterrows():
+        html += "tr"
+        order_name = row.get("Name")
+        row_span = order_counts.get(order_name, 1)
+        
+        is_first_row_of_cluster = order_name not in seen_orders
+        
+        for col in EXPORT_COLUMNS:
+            val = row.get(col)
+            val_str = "" if pd.isna(val) else str(val)
+            
+            # Format high-precision financial metrics cleanly
+            if col in ["Subtotal", "Shipping", "Taxes", "Total", "Outstanding Balance", "Tax 1 Value", "Lineitem price"] and val_str:
+                try: val_str = f"₹{float(val_str):,.2f}"
+                except: pass
+                
+            if col in MASTER_COLS:
+                if is_first_row_of_cluster:
+                    # Inject rowspan attribute to merge cells vertically on your dashboard screen
+                    align_class = " class='left-align'" if col == "Name" else ""
+                    html += f"<td rowspan='{row_span}'{align_class}>{val_str}</td>"
+            else:
+                align_class = " class='left-align'" if col == "Lineitem name" else ""
+                html += f"<td{align_class}>{val_str}</td>"
+                
+        html += "</tr>"
+        seen_orders.add(order_name)
+        
+    html += "</tbody></table></div>"
+    return html
 
-# --- SIDEBAR COMPACT RANGE CONTROLLERS ---
+# --- SIDEBAR COMPACT TIMELINE REGULATORS ---
 st.sidebar.header("📅 Query Range Controller")
 filter_type = st.sidebar.radio("Mode:", ["Exact Calendar Dates", "Whole Month / Year"])
 
@@ -102,30 +241,26 @@ else:
     else:
         end_iso = f"{(datetime.date(year, month_num + 1, 1) - datetime.timedelta(days=1)).isoformat()}T23:59:59Z"
 
-# --- EXECUTE PERFORMANCE OPTIMIZED PIPELINE ---
-with st.spinner("⚡ Fetching data matrices..."):
+# --- RUN EXECUTION PIPELINE ---
+with st.spinner("⚡ Querying database targets..."):
     raw_df = fetch_prebuilt_ledger(start_iso, end_iso)
 
 if raw_df.empty:
     st.warning("ℹ️ No records found matching this date slice.")
 else:
-    # Get basic totals directly from the raw data BEFORE clearing duplicates for display
+    # Compile key totals safely
     unique_orders_count = raw_df["Name"].nunique()
     total_rev = pd.to_numeric(raw_df.drop_duplicates(subset=["Name"])["Total"], errors='coerce').sum()
     unique_awbs_count = raw_df["awb number"].dropna().nunique()
 
-    # Apply the hierarchical visual layout rule
-    formatted_df = apply_hierarchical_excel_formatting(raw_df)
-
     # --- SEARCH BAR ---
     search_query = st.text_input("🔍 Search within filtered results (Order Name, AWB, Province)", "")
     if search_query:
-        mask = (
-            formatted_df["Name"].astype(str).str.contains(search_query, case=False, na=False) |
-            formatted_df["awb number"].astype(str).str.contains(search_query, case=False, na=False) |
-            formatted_df["Shipping Province Name"].astype(str).str.contains(search_query, case=False, na=False)
-        )
-        formatted_df = formatted_df[mask]
+        raw_df = raw_df[
+            raw_df["Name"].astype(str).str.contains(search_query, case=False, na=False) |
+            raw_df["awb number"].astype(str).str.contains(search_query, case=False, na=False) |
+            raw_df["Shipping Province Name"].astype(str).str.contains(search_query, case=False, na=False)
+        ]
 
     # --- METRICS DISPLAYS ---
     st.markdown("---")
@@ -134,36 +269,19 @@ else:
     c2.metric("Total Period Revenue", f"₹{total_rev:,.2f}")
     c3.metric("Packages Tracked", unique_awbs_count)
 
-    # --- EXPORT REPORT STRUCTURAL COLUMNS ---
-    EXPORT_COLUMNS = [
-        "Serial No", "Name", "SR Order ID", "Created at", "Financial Status", "Fulfillment Status",
-        "Currency", "Subtotal", "Shipping", "Taxes", "Total", "Shipping Method",
-        "Outstanding Balance", "Tax 1 Name", "Tax 1 Value", "Billing Province Name",
-        "Shipping Province Name", "Payment Mode", "Lineitem name", "Lineitem quantity",
-        "Lineitem price", "HSN CODE", "SHOPIFY DELIVERY STATUS", "awb number", "SHIPROCKET DELIVERY STATUS"
-    ]
-    
-    # Pad columns cleanly if any values were dropped
-    for col in EXPORT_COLUMNS:
-        if col not in formatted_df.columns: 
-            formatted_df[col] = np.nan
-            
-    export_ready_df = formatted_df[EXPORT_COLUMNS]
-    
-    # Replace default string NaN representations with blank empty cells for clean Excel rendering
-    csv_data = export_ready_df.to_csv(index=False).encode('utf-8')
+    # --- EXPORT INTERACTIVE INTERFACE LINK ---
     st.sidebar.markdown("---")
+    with st.spinner("📦 Pre-rendering Excel row-merges..."):
+        excel_binary_data = generate_excel_with_merged_cells(raw_df)
+        
     st.sidebar.download_button(
-        label="📥 Export Current view (CSV)",
-        data=csv_data,
-        file_name=f"GLOBO_Report_{start_iso[:10]}.csv",
-        mime="text/csv"
+        label="📥 Download Merged Excel (.xlsx)",
+        data=excel_binary_data,
+        file_name=f"GLOBO_Merged_Report_{start_iso[:10]}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
-    st.markdown("### 📋 Structured Data Matrix")
-    # Formats presentation display so empty float metrics render natively blank rather than as text strings
-    st.dataframe(
-        export_ready_df.replace({np.nan: None}), 
-        use_container_width=True, 
-        hide_index=True
-    )
+    # --- RENDER WEB COMPILING INTERFACE MATRIX ---
+    st.markdown("### 📋 Structured Data Matrix (Merged Row View)")
+    dashboard_html_table = render_html_merged_dashboard(raw_df)
+    st.markdown(dashboard_html_table, unsafe_allow_html=True)
