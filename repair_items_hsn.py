@@ -14,10 +14,11 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 shopify_headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
 
 def get_4_char_hsn(variant_id):
-    """Hits Shopify Variant API and returns exactly the first 4 digits of the HSN code."""
+    """Grabs inventory_item_id from Variant, then pulls the 4-digit HSN code from Inventory Item API."""
     if not variant_id or str(variant_id).lower() in ["none", ""]:
         return None
     try:
+        # Step 1: Query the Variant endpoint to find its linked inventory item reference
         url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/variants/{variant_id}.json"
         res = requests.get(url, headers=shopify_headers)
         
@@ -28,13 +29,22 @@ def get_4_char_hsn(variant_id):
             
         if res.status_code == 200:
             variant_data = res.json().get('variant', {})
-            hsn_raw = variant_data.get('harmonized_system_code')
+            inventory_item_id = variant_data.get('inventory_item_id')
             
-            if hsn_raw:
-                # Clean out any non-numeric symbols if present
-                clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
-                # Slice down to strictly the first 4 characters as discussed
-                return clean_hsn[:4]
+            if not inventory_item_id:
+                return None
+                
+            # Step 2: Now target the true home of the harmonized_system_code
+            inv_url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/inventory_items/{inventory_item_id}.json"
+            inv_res = requests.get(inv_url, headers=shopify_headers)
+            
+            if inv_res.status_code == 200:
+                inv_data = inv_res.json().get('inventory_item', {})
+                hsn_raw = inv_data.get('harmonized_system_code')
+                
+                if hsn_raw:
+                    clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
+                    return clean_hsn[:4]
     except Exception as e:
         print(f"❌ Error fetching variant {variant_id} from Shopify: {e}")
     return None
@@ -42,11 +52,9 @@ def get_4_char_hsn(variant_id):
 def repair_item_level_hsn():
     print("--- 🔍 INITIATING TARGETED SUB-ROW HSN REPAIR ENGINE ---")
     
-    # 1. Fetch only line items from the sub-row table where HSN is missing
-    # 1. Fetch data and filter out the missing items in Python memory safely
+    # 1. Pull data and filter blanks in local Python memory to avoid Supabase library version syntax errors
     db_res = supabase.table("shopify_order_items").select("*").execute()
     items_to_fix = [row for row in db_res.data if row.get("hsn_code") is None or str(row.get("hsn_code")).lower() in ["none", "null", ""]]
-
     
     if not items_to_fix:
         print("✅ Perfect! No NULL HSN entries found in shopify_order_items.")
@@ -66,7 +74,7 @@ def repair_item_level_hsn():
             
         print(f"Processing Item Variant {variant_id} for Order {order_id}...")
         
-        # 2. Get the 4-digit HSN code from Shopify
+        # 2. Get the real 4-digit HSN code from the Inventory setup
         hsn_4 = get_4_char_hsn(variant_id)
         
         if hsn_4:
