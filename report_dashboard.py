@@ -21,22 +21,36 @@ def extract_base_order_number(name_str):
     digits = re.findall(r'\d+', str(name_str))
     return "".join(digits) if digits else str(name_str).strip()
 
-@st.cache_data(ttl=300)  # Caches data streams for 5 minutes
-def fetch_and_build_master_ledger():
-    # 1. Gather all raw records out of Supabase
-    orders_res = supabase.table("shopify_orders").select("*").execute()
-    items_res = supabase.table("shopify_order_items").select("*").execute()
-    shipments_res = supabase.table("shiprocket_shipments").select("*").execute()
+def fetch_all_rows_paginated(table_name):
+    """Bypasses Supabase default 1000 row limits by recursively querying in chunks until empty."""
+    all_data = []
+    chunk_size = 1000
+    start_idx = 0
     
-    df_orders = pd.DataFrame(orders_res.data)
-    df_items = pd.DataFrame(items_res.data)
-    df_shipments = pd.DataFrame(shipments_res.data)
+    while True:
+        res = supabase.table(table_name).select("*").range(start_idx, start_idx + chunk_size - 1).execute()
+        data_chunk = res.data
+        if not data_chunk:
+            break
+        all_data.extend(data_chunk)
+        if len(data_chunk) < chunk_size:
+            break
+        start_idx += chunk_size
+        
+    return pd.DataFrame(all_data)
+
+@st.cache_data(ttl=120)  # Shortened to 2 mins cache so data stays live
+def fetch_and_build_master_ledger():
+    # 1. Fetch ALL data records across all row sizes using our paginated loops
+    df_orders = fetch_all_rows_paginated("shopify_orders")
+    df_items = fetch_all_rows_paginated("shopify_order_items")
+    df_shipments = fetch_all_rows_paginated("shiprocket_shipments")
     
     if df_orders.empty:
         return pd.DataFrame()
         
-    # --- FIX: FORCE CLEAN TIMEZONE-NEUTRAL DATETIME PARSING ---
-    df_orders["created_at_dt"] = pd.to_datetime(df_orders["created_at"], errors='coerce', utc=True).dt.tz_localize(None)
+    # --- PARSE TIMEZONE NEUTRAL DATETIME SO COMPLEMENTARY FILTERING WORKS ---
+    df_orders["created_at_dt"] = pd.to_datetime(df_orders["created_at"], errors='coerce').dt.tz_localize(None)
     
     # Pre-calculate base numbers for the flexible wildcard tracking join
     df_orders["base_match_id"] = df_orders["name"].apply(extract_base_order_number)
@@ -61,7 +75,7 @@ def fetch_and_build_master_ledger():
                 # --- MASTER ORDER LEVEL DETAILS ---
                 "Name": order.get("name"),
                 "Created at": order.get("created_at"),
-                "created_at_dt": order.get("created_at_dt"), # Timezone-naive datetime object
+                "created_at_dt": order.get("created_at_dt"),
                 "Financial Status": order.get("financial_status"),
                 "Fulfillment Status": order.get("fulfillment_status"),
                 "Currency": order.get("currency"),
@@ -113,12 +127,15 @@ def fetch_and_build_master_ledger():
     return master_df
 
 # --- RUN ENGINE DATA PIPELINE ---
-with st.spinner("Compiling relational data matrices..."):
+with st.spinner("Scraping all pages from database streams... This may take a few seconds..."):
     raw_ledger = fetch_and_build_master_ledger()
 
 if raw_ledger.empty:
     st.error("⚠️ Database connection returned empty datasets. Check master table records.")
 else:
+    # Print out total records grabbed to screen for diagnostic validation
+    st.toast(f"Loaded {len(raw_ledger)} transaction rows successfully!")
+
     # --- INTERACTIVE DATE & CALENDAR FILTERS ---
     st.sidebar.header("📅 Date Selection Matrix")
     filter_type = st.sidebar.radio("Select Filter Mode:", ["By Exact Calendar Dates", "By Whole Month / Year"])
@@ -131,10 +148,8 @@ else:
         
         selected_range = st.sidebar.date_input("Choose Range:", [min_date, max_date])
         
-        # Guard clause handling standard single click parameters on Streamlit calendars
         if isinstance(selected_range, (list, tuple)) and len(selected_range) == 2:
             start_date, end_date = selected_range
-            # Clean matching metrics comparison logic
             filtered_df = filtered_df[
                 (filtered_df["created_at_dt"].dt.date >= start_date) & 
                 (filtered_df["created_at_dt"].dt.date <= end_date)
@@ -152,7 +167,6 @@ else:
             7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
         }
         
-        # Isolate indices available for this specific year dynamically
         available_months_idx = sorted(raw_ledger[raw_ledger["created_at_dt"].dt.year == selected_year]["created_at_dt"].dt.month.dropna().unique().astype(int))
         available_months_names = [months_map[m] for m in available_months_idx]
         
