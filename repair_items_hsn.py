@@ -43,8 +43,10 @@ def repair_item_level_hsn():
     print("--- 🔍 INITIATING TARGETED SUB-ROW HSN REPAIR ENGINE ---")
     
     # 1. Fetch only line items from the sub-row table where HSN is missing
-    db_res = supabase.table("shopify_order_items").select("*").is_("hsn_code", "null").execute()
-    items_to_fix = db_res.data
+    # 1. Fetch data and filter out the missing items in Python memory safely
+    db_res = supabase.table("shopify_order_items").select("*").execute()
+    items_to_fix = [row for row in db_res.data if row.get("hsn_code") is None or str(row.get("hsn_code")).lower() in ["none", "null", ""]]
+
     
     if not items_to_fix:
         print("✅ Perfect! No NULL HSN entries found in shopify_order_items.")
