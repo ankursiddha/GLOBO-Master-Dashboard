@@ -14,11 +14,10 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 shopify_headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
 
 def get_4_char_hsn(variant_id):
-    """Grabs inventory_item_id from Variant, then pulls the 4-digit HSN code from Inventory Item API."""
+    """Hits Shopify Variant API with full structural debugging to catch the fields."""
     if not variant_id or str(variant_id).lower() in ["none", ""]:
         return None
     try:
-        # Step 1: Query the Variant endpoint to find its linked inventory item reference
         url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/variants/{variant_id}.json"
         res = requests.get(url, headers=shopify_headers)
         
@@ -29,22 +28,39 @@ def get_4_char_hsn(variant_id):
             
         if res.status_code == 200:
             variant_data = res.json().get('variant', {})
+            
+            # --- DEBUG BLOCK FOR LOG PRINTING ---
+            print(f"DEBUG Variant {variant_id} Data Keys: {list(variant_data.keys())}")
+            
+            # Check if Shopify actually has the raw HSN value here directly
+            hsn_raw = variant_data.get('harmonized_system_code')
+            if hsn_raw:
+                print(f"DEBUG: Found direct HSN in variant data: {hsn_raw}")
+                clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
+                return clean_hsn[:4]
+                
             inventory_item_id = variant_data.get('inventory_item_id')
+            print(f"DEBUG Variant {variant_id} linked Inventory Item ID: {inventory_item_id}")
             
-            if not inventory_item_id:
-                return None
+            if inventory_item_id:
+                inv_url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/inventory_items/{inventory_item_id}.json"
+                inv_res = requests.get(inv_url, headers=shopify_headers)
                 
-            # Step 2: Now target the true home of the harmonized_system_code
-            inv_url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/inventory_items/{inventory_item_id}.json"
-            inv_res = requests.get(inv_url, headers=shopify_headers)
+                print(f"DEBUG Inventory Item API Status Code: {inv_res.status_code}")
+                if inv_res.status_code == 200:
+                    inv_data = inv_res.json().get('inventory_item', {})
+                    print(f"DEBUG Inventory Item Keys: {list(inv_data.keys())}")
+                    hsn_raw = inv_data.get('harmonized_system_code')
+                    print(f"DEBUG Inventory Raw HSN Value: {hsn_raw}")
+                    
+                    if hsn_raw:
+                        clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
+                        return clean_hsn[:4]
+                else:
+                    print(f"DEBUG Inventory Item Error Response Text: {inv_res.text}")
+        else:
+            print(f"❌ Variant API call failed with status {res.status_code}. Response: {res.text}")
             
-            if inv_res.status_code == 200:
-                inv_data = inv_res.json().get('inventory_item', {})
-                hsn_raw = inv_data.get('harmonized_system_code')
-                
-                if hsn_raw:
-                    clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
-                    return clean_hsn[:4]
     except Exception as e:
         print(f"❌ Error fetching variant {variant_id} from Shopify: {e}")
     return None
