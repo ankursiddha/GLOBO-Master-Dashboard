@@ -1,7 +1,8 @@
 import os
 import re
-import time
+import math
 import pandas as pd
+import numpy as np
 from supabase import create_client, Client
 
 # --- PRODUCTION AUTHENTICATION CONFIGURATION ---
@@ -38,8 +39,18 @@ def fetch_all_rows_paginated(table_name):
         start_idx += chunk_size
     return pd.DataFrame(all_data)
 
+def is_invalid_value(val):
+    """Checks if a value is an illegal JSON float (NaN or Infinity)."""
+    if val is None:
+        return False
+    if isinstance(val, float):
+        return math.isnan(val) or math.isinf(val)
+    if isinstance(val, pd.Timestamp) or pd.isna(val):
+        return True
+    return False
+
 def sync_master_reporting_table():
-    print("--- 🔍 STARTING MASTER REPORTING TABLE POPULATION WORKER ---")
+    print("--- 🔍 STARTING DIAGNOSTIC LEDGER POPULATION ENGINE ---")
     
     # 1. Fetch data from source tables
     print("Fetching active tables from Supabase...")
@@ -53,22 +64,43 @@ def sync_master_reporting_table():
 
     print(f"Loaded {len(df_orders)} orders, {len(df_items)} items, and {len(df_shipments)} shipments.")
 
-    # 2. Clear existing precompiled ledger rows to ensure a clean refresh
-    print("Purging old entries from master_reporting_ledger...")
-    supabase.table("master_reporting_ledger").delete().neq("Name", "FORCE_DELETE_ALL_ROWS").execute()
-
-    compiled_rows = []
+    # 2. Pre-Scan Source Data for Immediate System Warnings
+    print("\n--- 🩺 PHASE 1: PRE-SCANNING SOURCE DATASETS FOR INVALID FLOATS ---")
+    numeric_order_cols = ["subtotal_price", "total_shipping_price_set", "total_tax", "total_price", "outstanding_balance"]
+    numeric_item_cols = ["tax_1_value", "lineitem_price"]
     
+    order_nan_count = 0
+    for _, row in df_orders.iterrows():
+        for col in numeric_order_cols:
+            val = pd.to_numeric(row.get(col), errors='coerce')
+            if is_invalid_value(val):
+                order_nan_count += 1
+                if order_nan_count <= 10:  # Cap printout size to avoid log overload
+                    print(f"  ⚠️ SOURCE WARNING [shopify_orders]: Order Name: {row.get('name')} has invalid float/NaN in column: '{col}'")
+                    
+    item_nan_count = 0
+    for _, row in df_items.iterrows():
+        for col in numeric_item_cols:
+            val = pd.to_numeric(row.get(col), errors='coerce')
+            if is_invalid_value(val):
+                item_nan_count += 1
+                if item_nan_count <= 10:
+                    print(f"  ⚠️ SOURCE WARNING [shopify_order_items]: Item ID: {row.get('lineitem_id')} (Order ID: {row.get('order_id')}) has invalid float/NaN in column: '{col}'")
+
+    print(f"📊 Pre-Scan Summary: Found {order_nan_count} illegal fields in shopify_orders and {item_nan_count} in shopify_order_items.")
+
     # 3. Process records with strict sub-row alignment rules
+    print("\n--- 🔄 PHASE 2: PROCESSING RELATIONAL MAPPING & EXTRACTING SUB-ROWS ---")
+    compiled_rows = []
+    total_processed_subrows = 0
+    
     for _, order in df_orders.iterrows():
         order_id = order.get("order_id")
         raw_name = order.get("name")
         clean_name = clean_shopify_name(raw_name)
         
-        # Isolate items for this order
         o_items = df_items[df_items["order_id"] == order_id] if not df_items.empty else pd.DataFrame()
         
-        # Isolate shipments matching wildcard rules
         if not df_shipments.empty and clean_name:
             matched_ships_mask = df_shipments["channel_order_id"].apply(lambda x: is_shiprocket_wildcard_match(clean_name, x))
             o_ships = df_shipments[matched_ships_mask]
@@ -108,7 +140,6 @@ def sync_master_reporting_table():
                 "SHIPROCKET DELIVERY STATUS": order.get("status")
             }
             
-            # Map item fields
             if i < len(o_items):
                 item = o_items.iloc[i]
                 row_data["shopify_lineitem_id"] = str(item.get("lineitem_id"))
@@ -119,7 +150,6 @@ def sync_master_reporting_table():
                 row_data["Lineitem price"] = pd.to_numeric(item.get("lineitem_price"), errors='coerce')
                 row_data["HSN CODE"] = item.get("hsn_code")
                 
-            # Map shipment fields
             if i < len(o_ships):
                 ship = o_ships.iloc[i]
                 row_data["shiprocket_shipment_id"] = str(ship.get("id"))
@@ -128,19 +158,48 @@ def sync_master_reporting_table():
                 row_data["SHIPROCKET DELIVERY STATUS"] = ship.get("status")
                 
             compiled_rows.append(row_data)
+            total_processed_subrows += 1
 
-    # 4. Batch push clean compiled records back up to Supabase
-    print(f"Uploading {len(compiled_rows)} processed transactional sub-rows to Supabase...")
+    # 4. Strict Real-Time Payload Interception & JSON Check
+    print("\n--- 🔎 PHASE 3: INTERCEPTING PROCESSED BATCHES FOR JSON COMPLIANCE ---")
+    checked_cleaned_rows = []
+    payload_nan_errors = 0
+    
+    numeric_keys_to_verify = ["Subtotal", "Shipping", "Taxes", "Total", "Outstanding Balance", "Tax 1 Value", "Lineitem price"]
+    
+    for idx, row in enumerate(compiled_rows):
+        has_error_in_row = False
+        for key in numeric_keys_to_verify:
+            val = row[key]
+            if is_invalid_value(val):
+                payload_nan_errors += 1
+                has_error_in_row = True
+                if payload_nan_errors <= 15:
+                    print(f"  🚨 JSON CRITICAL FAULT at Processed Row index {idx} | Order: {row['Name']} | Key: '{key}' has value '{val}' (Illegal Float)")
+                
+                # Convert the bad value specifically to None for debugging visibility, tracking the location
+                row[key] = None
+                
+        checked_cleaned_rows.append(row)
+
+    print(f"\n📢 Interception Complete: Found {payload_nan_errors} illegal values embedded inside the compiled JSON structures.")
+
+    # 5. Purge and Batch Push Clear Records
+    print("\n--- 💾 PHASE 4: CLEARING LEDGER & EXECUTING DATABASE WRITE ---")
+    print("Purging old entries from master_reporting_ledger...")
+    supabase.table("master_reporting_ledger").delete().neq("Name", "FORCE_DELETE_ALL_ROWS").execute()
+
+    print(f"Uploading {len(checked_cleaned_rows)} processed transactional sub-rows to Supabase...")
     batch_size = 500
-    for idx in range(0, len(compiled_rows), batch_size):
-        chunk = compiled_rows[idx:idx + batch_size]
+    for idx in range(0, len(checked_cleaned_rows), batch_size):
+        chunk = checked_cleaned_rows[idx:idx + batch_size]
         try:
             supabase.table("master_reporting_ledger").insert(chunk).execute()
             print(f" Pushed records {idx} to {idx + len(chunk)} successfully.")
         except Exception as e:
-            print(f" ❌ Error pushing batch block starting at index {idx}: {e}")
+            print(f" ❌ Database write blocked at index block {idx}: {e}")
             
-    print("\n🎉 Precompiled table optimization completed successfully!")
+    print("\n🎉 Processed ledger optimization engine run complete.")
 
 if __name__ == "__main__":
     sync_master_reporting_table()
