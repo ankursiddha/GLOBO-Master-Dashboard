@@ -15,7 +15,7 @@ st.title("📊 GLOBO Master Report & Advanced Export Ledger")
 st.subheader("⚡ High Performance Server-Cached Database Edition")
 
 def fetch_prebuilt_ledger(start_iso, end_iso):
-    """Fetches transactional data sub-rows cleanly from master_reporting_ledger."""
+    """Fetches transactional data rows comprehensively from master_reporting_ledger."""
     all_rows = []
     chunk_size = 1000
     start_idx = 0
@@ -41,63 +41,42 @@ def fetch_prebuilt_ledger(start_iso, end_iso):
         df["created_at_dt"] = pd.to_datetime(df["Created at"], errors='coerce').dt.tz_localize(None)
     return df
 
-def visually_aggregate_ledger(df):
+def apply_hierarchical_excel_formatting(df):
     """
-    Groups duplicate rows by Order Name. Order-level fields stay single, 
-    while multi-line items and tracking matches merge cleanly into 
-    multi-line strings inside a single row cell block.
+    Transforms fully filled database rows into a structured invoice style layout.
+    Presents order level values ONLY on the first line, leaving sub-row columns blank.
     """
     if df.empty:
         return df
 
-    # Replace None values with empty text to avoid string join issues
-    string_cols = [
-        "SR Order ID", "Tax 1 Name", "Tax 1 Value", "Lineitem name", 
-        "Lineitem quantity", "Lineitem price", "HSN CODE", "awb number", 
-        "SHIPROCKET DELIVERY STATUS"
+    # 1. Sort sequentially by original database timestamps (newest orders first)
+    # Inside each order, sort by tracking/lineitem details to preserve sub-row pairing structure
+    df = df.sort_values(by=["Created at", "shopify_lineitem_id", "shiprocket_shipment_id"], ascending=[False, True, True])
+
+    # 2. Add an explicit sequential Serial Number sequence mapping to unique orders
+    unique_orders = df["Name"].unique()
+    order_to_serial = {name: float(idx + 1) for idx, name in enumerate(unique_orders)}
+    df["Serial No"] = df["Name"].map(order_to_serial)
+
+    # 3. Identify all structural master columns that must remain blank on sub-rows
+    master_cols = [
+        "Serial No", "Name", "Created at", "Financial Status", "Fulfillment Status", 
+        "Currency", "Subtotal", "Shipping", "Taxes", "Total", "Shipping Method", 
+        "Outstanding Balance", "Billing Province Name", "Shipping Province Name", "Payment Mode"
     ]
-    for c in string_cols:
-        if c in df.columns:
-            df[c] = df[c].fillna("").astype(str)
 
-    # Sorting sequentially by original creation timeline
-    df = df.sort_values(by="Created at", ascending=False)
+    # Ensure all target columns exist in data matrix safely
+    for col in master_cols:
+        if col not in df.columns:
+            df[col] = np.nan
 
-    # Define aggregation behavior map
-    agg_rules = {
-        "Created at": "first",
-        "created_at_dt": "first",
-        "Financial Status": "first",
-        "Fulfillment Status": "first",
-        "Currency": "first",
-        "Subtotal": "first",
-        "Shipping": "first",
-        "Taxes": "first",
-        "Total": "first",
-        "Shipping Method": "first",
-        "Outstanding Balance": "first",
-        "Billing Province Name": "first",
-        "Shipping Province Name": "first",
-        "Payment Mode": "first",
-        "SHOPIFY DELIVERY STATUS": "first",
-        
-        # Unique tracking/item columns merge using newlines (\n) to segment the cells
-        "SR Order ID": lambda x: "\n".join([v for v in x if v.strip()]),
-        "Tax 1 Name": lambda x: "\n".join([v for v in x if v.strip()]),
-        "Tax 1 Value": lambda x: "\n".join([v for v in x if v.strip()]),
-        "Lineitem name": lambda x: "\n".join([v for v in x if v.strip()]),
-        "Lineitem quantity": lambda x: "\n".join([v for v in x if v.strip()]),
-        "Lineitem price": lambda x: "\n".join([v for v in x if v.strip()]),
-        "HSN CODE": lambda x: "\n".join([v for v in x if v.strip()]),
-        "awb number": lambda x: "\n".join([v for v in x if v.strip()]),
-        "SHIPROCKET DELIVERY STATUS": lambda x: "\n".join([v for v in x if v.strip()])
-    }
+    # 4. Loop backwards or track duplicates to clear trailing order level cell content
+    # Group by 'Name' and clear out duplicate values for all rows except the first row in the group
+    df[master_cols] = df.groupby("Name")[master_cols].transform(lambda x: x.mask(x.index != x.index[0]))
 
-    # Execute structural grouping by main Order Name identifier
-    grouped = df.groupby("Name", as_index=False).agg(agg_rules)
-    return grouped.sort_values(by="Created at", ascending=False)
+    return df
 
-# --- SIDEBAR COMPACT FILTERS ---
+# --- SIDEBAR COMPACT RANGE CONTROLLERS ---
 st.sidebar.header("📅 Query Range Controller")
 filter_type = st.sidebar.radio("Mode:", ["Exact Calendar Dates", "Whole Month / Year"])
 
@@ -123,57 +102,68 @@ else:
     else:
         end_iso = f"{(datetime.date(year, month_num + 1, 1) - datetime.timedelta(days=1)).isoformat()}T23:59:59Z"
 
-# --- EXECUTE HIGH SPEED FETCH ---
-with st.spinner("⚡ Fetching compiled data matrices..."):
+# --- EXECUTE PERFORMANCE OPTIMIZED PIPELINE ---
+with st.spinner("⚡ Fetching data matrices..."):
     raw_df = fetch_prebuilt_ledger(start_iso, end_iso)
 
 if raw_df.empty:
     st.warning("ℹ️ No records found matching this date slice.")
 else:
-    # Apply our custom cell merge aggregation layer
-    filtered_df = visually_aggregate_ledger(raw_df)
+    # Get basic totals directly from the raw data BEFORE clearing duplicates for display
+    unique_orders_count = raw_df["Name"].nunique()
+    total_rev = pd.to_numeric(raw_df.drop_duplicates(subset=["Name"])["Total"], errors='coerce').sum()
+    unique_awbs_count = raw_df["awb number"].dropna().nunique()
+
+    # Apply the hierarchical visual layout rule
+    formatted_df = apply_hierarchical_excel_formatting(raw_df)
 
     # --- SEARCH BAR ---
     search_query = st.text_input("🔍 Search within filtered results (Order Name, AWB, Province)", "")
     if search_query:
         mask = (
-            filtered_df["Name"].astype(str).str.contains(search_query, case=False, na=False) |
-            filtered_df["awb number"].astype(str).str.contains(search_query, case=False, na=False) |
-            filtered_df["Shipping Province Name"].astype(str).str.contains(search_query, case=False, na=False)
+            formatted_df["Name"].astype(str).str.contains(search_query, case=False, na=False) |
+            formatted_df["awb number"].astype(str).str.contains(search_query, case=False, na=False) |
+            formatted_df["Shipping Province Name"].astype(str).str.contains(search_query, case=False, na=False)
         )
-        filtered_df = filtered_df[mask]
+        formatted_df = formatted_df[mask]
 
-    # --- METRICS ---
+    # --- METRICS DISPLAYS ---
     st.markdown("---")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Unique Orders Found", filtered_df["Name"].nunique())
-    
-    total_rev = pd.to_numeric(filtered_df["Total"], errors='coerce').sum()
+    c1.metric("Unique Orders Found", unique_orders_count)
     c2.metric("Total Period Revenue", f"₹{total_rev:,.2f}")
-    
-    # Clean split lines extraction to count true discrete tracking entities
-    all_awbs = "\n".join(filtered_df["awb number"].dropna().tolist()).split("\n")
-    unique_awbs_count = len(set([a.strip() for a in all_awbs if a.strip()]))
     c3.metric("Packages Tracked", unique_awbs_count)
 
-    # --- EXPORT LEDGERS ---
+    # --- EXPORT REPORT STRUCTURAL COLUMNS ---
     EXPORT_COLUMNS = [
-        "Name", "SR Order ID", "Created at", "Financial Status", "Fulfillment Status",
+        "Serial No", "Name", "SR Order ID", "Created at", "Financial Status", "Fulfillment Status",
         "Currency", "Subtotal", "Shipping", "Taxes", "Total", "Shipping Method",
         "Outstanding Balance", "Tax 1 Name", "Tax 1 Value", "Billing Province Name",
         "Shipping Province Name", "Payment Mode", "Lineitem name", "Lineitem quantity",
         "Lineitem price", "HSN CODE", "SHOPIFY DELIVERY STATUS", "awb number", "SHIPROCKET DELIVERY STATUS"
     ]
     
+    # Pad columns cleanly if any values were dropped
     for col in EXPORT_COLUMNS:
-        if col not in filtered_df.columns: 
-            filtered_df[col] = np.nan
+        if col not in formatted_df.columns: 
+            formatted_df[col] = np.nan
             
-    export_ready_df = filtered_df[EXPORT_COLUMNS]
+    export_ready_df = formatted_df[EXPORT_COLUMNS]
     
+    # Replace default string NaN representations with blank empty cells for clean Excel rendering
     csv_data = export_ready_df.to_csv(index=False).encode('utf-8')
     st.sidebar.markdown("---")
-    st.sidebar.download_button("📥 Export Current view (CSV)", csv_data, f"GLOBO_Report_{start_iso[:10]}.csv", "text/csv")
+    st.sidebar.download_button(
+        label="📥 Export Current view (CSV)",
+        data=csv_data,
+        file_name=f"GLOBO_Report_{start_iso[:10]}.csv",
+        mime="text/csv"
+    )
 
     st.markdown("### 📋 Structured Data Matrix")
-    st.dataframe(export_ready_df, use_container_width=True, hide_index=True)
+    # Formats presentation display so empty float metrics render natively blank rather than as text strings
+    st.dataframe(
+        export_ready_df.replace({np.nan: None}), 
+        use_container_width=True, 
+        hide_index=True
+    )
