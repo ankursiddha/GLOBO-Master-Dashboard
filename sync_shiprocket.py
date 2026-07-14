@@ -79,10 +79,11 @@ def sync_complete_shiprocket_history():
     total_synced = 0
 
     for current_month_dt in audit_months:
-        # Enforce Lock Date Boundary Safeguard (Checks day-by-day now)
-        if current_month_dt < lock_dt:
+        # Enforce Lock Date Boundary Safeguard using unified datetime types
+        if current_month_dt.date() < lock_dt.date():
             continue
 
+        
         first_day = current_month_dt.strftime("%Y-%m-%d")
         last_day = first_day  # Forces the API to search one single day thoroughly
         tab_name = current_month_dt.strftime("%d_%b_%Y")
