@@ -15,18 +15,37 @@ st.set_page_config(page_title="GLOBO Master Analytics Engine", layout="wide")
 st.title("📊 GLOBO Master Report & Advanced Export Ledger")
 st.subheader("Granular Analytics Dashboard — Server-Optimized Edition")
 
-def extract_base_order_number(name_str):
-    if not name_str: return ""
-    digits = re.findall(r'\d+', str(name_str))
-    return "".join(digits) if digits else str(name_str).strip()
+def clean_shopify_name(name_str):
+    """Removes the leading '#' hash symbol and standardizes case format for precision evaluation."""
+    if not name_str:
+        return ""
+    return str(name_str).replace("#", "").strip().upper()
+
+def is_shiprocket_wildcard_match(shopify_clean_name, sr_channel_order_id):
+    """
+    Uses explicit boundary scanning to match GLOBO1001 with R_GLOBO1001, GLOBO1001-C, or GLOBO1001-C1.
+    Strictly prevents substring leaks so GLOBO1001 NEVER matches with GLOBO10011.
+    """
+    if not shopify_clean_name or not sr_channel_order_id:
+        return False
+        
+    sr_id = str(sr_channel_order_id).strip().upper()
+    
+    # Escape any potential characters to make string evaluation engine safe
+    escaped_target = re.escape(shopify_clean_name)
+    
+    # Regex breakdown: Looks for target string bounded by the start/end of a line, or symbols like _, -, or spaces.
+    # This guarantees numbers at the end (like 11 vs 1) don't bleed across fields.
+    pattern = rf"(?:^|[^A-Z0-9]){escaped_target}(?:[^A-Z0-9]|$)"
+    
+    return bool(re.search(pattern, sr_id))
 
 def fetch_filtered_data(start_iso, end_iso):
-    """Queries Supabase with precise server-side date constraints AND full pagination loop to bypass the 1000 limit."""
+    """Queries Supabase with precise server-side date constraints AND full pagination loop."""
     all_orders = []
     chunk_size = 1000
     start_idx = 0
     
-    # Paginate through the date-filtered orders to safely pull records exceeding 1,000 rows
     while True:
         res = supabase.table("shopify_orders") \
                       .select("*") \
@@ -49,8 +68,6 @@ def fetch_filtered_data(start_iso, end_iso):
         return pd.DataFrame()
         
     order_ids = df_orders["order_id"].tolist()
-    order_names = df_orders["name"].dropna().tolist()
-    base_match_ids = [extract_base_order_number(n) for n in order_names]
     
     # Query child tables using batch chunking to avoid query limit bounds
     df_items = pd.DataFrame()
@@ -61,37 +78,45 @@ def fetch_filtered_data(start_iso, end_iso):
             if res.data:
                 df_items = pd.concat([df_items, pd.DataFrame(res.data)], ignore_index=True)
                 
+    # Pull Shiprocket shipment logs for comparative scan evaluations
     df_shipments = pd.DataFrame()
-    if base_match_ids:
-        for i in range(0, len(base_match_ids), 500):
-            chunk = base_match_ids[i:i+500]
-            res = supabase.table("shiprocket_shipments").select("*").in_("channel_order_id", chunk).execute()
-            if res.data:
-                df_shipments = pd.concat([df_shipments, pd.DataFrame(res.data)], ignore_index=True)
-                
-    if df_shipments.empty and base_match_ids:
-        res = supabase.table("shiprocket_shipments").select("*").limit(1000).execute()
-        df_shipments = pd.DataFrame(res.data)
+    try:
+        # Load the shipments in chunks to make sure we don't hit payload capacity
+        sr_start = 0
+        while True:
+            sr_res = supabase.table("shiprocket_shipments").select("*").range(sr_start, sr_start + 999).execute()
+            if not sr_res.data:
+                break
+            df_shipments = pd.concat([df_shipments, pd.DataFrame(sr_res.data)], ignore_index=True)
+            if len(sr_res.data) < 1000:
+                break
+            sr_start += 1000
+    except Exception as e:
+        print(f"Non-critical fallback handling applied to Shiprocket payload extraction: {e}")
 
     # Assemble Aligned Relational Matrix
     df_orders["created_at_dt"] = pd.to_datetime(df_orders["created_at"], errors='coerce').dt.tz_localize(None)
-    df_orders["base_match_id"] = df_orders["name"].apply(extract_base_order_number)
     
-    if not df_shipments.empty:
-        df_shipments["base_match_id"] = df_shipments["channel_order_id"].apply(extract_base_order_number)
-        
     final_rows = []
     for _, order in df_orders.iterrows():
         oid = order.get("order_id")
-        bid = order.get("base_match_id")
+        raw_name = order.get("name")
+        clean_name = clean_shopify_name(raw_name)
         
         o_items = df_items[df_items["order_id"] == oid] if not df_items.empty else pd.DataFrame()
-        o_ships = df_shipments[df_shipments["base_match_id"] == bid] if not df_shipments.empty else pd.DataFrame()
+        
+        # --- FIXED SEARCH BLOCK: SCAN SHIPMENTS TABLE USING BOUNDARY MATCH RULES ---
+        if not df_shipments.empty and clean_name:
+            # Filters the shipments cache matching only clean string variants matching target constraints
+            matched_ships_mask = df_shipments["channel_order_id"].apply(lambda x: is_shiprocket_wildcard_match(clean_name, x))
+            o_ships = df_shipments[matched_ships_mask]
+        else:
+            o_ships = pd.DataFrame()
         
         max_sub_rows = max(len(o_items), len(o_ships), 1)
         for i in range(max_sub_rows):
             row_data = {
-                "Name": order.get("name"), 
+                "Name": raw_name, 
                 "SR Order ID": None,
                 "Created at": order.get("created_at"), 
                 "created_at_dt": order.get("created_at_dt"),
