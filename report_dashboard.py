@@ -21,10 +21,29 @@ def extract_base_order_number(name_str):
     return "".join(digits) if digits else str(name_str).strip()
 
 def fetch_filtered_data(start_iso, end_iso):
-    """Queries Supabase with precise server-side date constraints to maximize speed."""
-    # 1. Fetch only matching orders
-    orders_res = supabase.table("shopify_orders").select("*").gte("created_at", start_iso).lte("created_at", end_iso).execute()
-    df_orders = pd.DataFrame(orders_res.data)
+    """Queries Supabase with precise server-side date constraints AND full pagination loop to bypass the 1000 limit."""
+    all_orders = []
+    chunk_size = 1000
+    start_idx = 0
+    
+    # Paginate through the date-filtered orders to safely pull records exceeding 1,000 rows
+    while True:
+        res = supabase.table("shopify_orders") \
+                      .select("*") \
+                      .gte("created_at", start_iso) \
+                      .lte("created_at", end_iso) \
+                      .range(start_idx, start_idx + chunk_size - 1) \
+                      .execute()
+        
+        data_chunk = res.data
+        if not data_chunk:
+            break
+        all_orders.extend(data_chunk)
+        if len(data_chunk) < chunk_size:
+            break
+        start_idx += chunk_size
+        
+    df_orders = pd.DataFrame(all_orders)
     
     if df_orders.empty:
         return pd.DataFrame()
@@ -33,7 +52,7 @@ def fetch_filtered_data(start_iso, end_iso):
     order_names = df_orders["name"].dropna().tolist()
     base_match_ids = [extract_base_order_number(n) for n in order_names]
     
-    # 2. Query child tables using batch chunking to avoid query limit bounds
+    # Query child tables using batch chunking to avoid query limit bounds
     df_items = pd.DataFrame()
     if order_ids:
         for i in range(0, len(order_ids), 500):
@@ -44,19 +63,17 @@ def fetch_filtered_data(start_iso, end_iso):
                 
     df_shipments = pd.DataFrame()
     if base_match_ids:
-        # Build wildcard or list matching checks against Shiprocket rows efficiently
         for i in range(0, len(base_match_ids), 500):
             chunk = base_match_ids[i:i+500]
             res = supabase.table("shiprocket_shipments").select("*").in_("channel_order_id", chunk).execute()
             if res.data:
                 df_shipments = pd.concat([df_shipments, pd.DataFrame(res.data)], ignore_index=True)
                 
-    # Fallback to loose text cleaning matching check if direct batch missed custom flags
     if df_shipments.empty and base_match_ids:
         res = supabase.table("shiprocket_shipments").select("*").limit(1000).execute()
         df_shipments = pd.DataFrame(res.data)
 
-    # 3. Assemble Aligned Relational Matrix
+    # Assemble Aligned Relational Matrix
     df_orders["created_at_dt"] = pd.to_datetime(df_orders["created_at"], errors='coerce').dt.tz_localize(None)
     df_orders["base_match_id"] = df_orders["name"].apply(extract_base_order_number)
     
@@ -74,14 +91,31 @@ def fetch_filtered_data(start_iso, end_iso):
         max_sub_rows = max(len(o_items), len(o_ships), 1)
         for i in range(max_sub_rows):
             row_data = {
-                "Name": order.get("name"), "Created at": order.get("created_at"), "created_at_dt": order.get("created_at_dt"),
-                "Financial Status": order.get("financial_status"), "Fulfillment Status": order.get("fulfillment_status"),
-                "Currency": order.get("currency"), "Subtotal": order.get("subtotal_price"), "Shipping": order.get("total_shipping_price_set"),
-                "Taxes": order.get("total_tax"), "Total": order.get("total_price"), "Shipping Method": order.get("shipping_method"),
-                "Outstanding Balance": order.get("outstanding_balance"), "Billing Province Name": order.get("billing_address_province"),
-                "Shipping Province Name": order.get("shipping_address_province"), "Payment Mode": order.get("gateway"), "SHOPIFY DELIVERY STATUS": order.get("delivery_status"),
-                "Tax 1 Name": None, "Tax 1 Value": None, "Lineitem name": None, "Lineitem quantity": None, "Lineitem price": None, "HSN CODE": None,
-                "SR Order ID": None, "awb number": None, "SHIPROCKET DELIVERY STATUS": None
+                "Name": order.get("name"), 
+                "SR Order ID": None,
+                "Created at": order.get("created_at"), 
+                "created_at_dt": order.get("created_at_dt"),
+                "Financial Status": order.get("financial_status"), 
+                "Fulfillment Status": order.get("fulfillment_status"),
+                "Currency": order.get("currency"), 
+                "Subtotal": order.get("subtotal_price"), 
+                "Shipping": order.get("total_shipping_price_set"),
+                "Taxes": order.get("total_tax"), 
+                "Total": order.get("total_price"), 
+                "Shipping Method": order.get("shipping_method"),
+                "Outstanding Balance": order.get("outstanding_balance"), 
+                "Tax 1 Name": None, 
+                "Tax 1 Value": None, 
+                "Billing Province Name": order.get("billing_address_province"),
+                "Shipping Province Name": order.get("shipping_address_province"), 
+                "Payment Mode": order.get("gateway"), 
+                "Lineitem name": None, 
+                "Lineitem quantity": None, 
+                "Lineitem price": None, 
+                "HSN CODE": None,
+                "SHOPIFY DELIVERY STATUS": order.get("delivery_status"), 
+                "awb number": None, 
+                "SHIPROCKET DELIVERY STATUS": None
             }
             if i < len(o_items):
                 item = o_items.iloc[i]
@@ -103,11 +137,10 @@ def fetch_filtered_data(start_iso, end_iso):
         master_df = master_df.sort_values(by="Created at", ascending=False)
     return master_df
 
-# --- SIDEBAR COMPACT FILTERS ---
+# --- SIDEBAR FILTERS ---
 st.sidebar.header("📅 Query Range Controller")
 filter_type = st.sidebar.radio("Mode:", ["Exact Calendar Dates", "Whole Month / Year"])
 
-# Calculate date constraints before fetching data
 if filter_type == "Exact Calendar Dates":
     today = datetime.date.today()
     start_date = st.sidebar.date_input("Start Date", today - datetime.timedelta(days=30))
@@ -131,7 +164,7 @@ else:
         end_iso = f"{(datetime.date(year, month_num + 1, 1) - datetime.timedelta(days=1)).isoformat()}T23:59:59Z"
 
 # --- RUN PERFORMANCE OPTIMIZED PIPELINE ---
-with st.spinner("⚡ Querying database targets..."):
+with st.spinner("⚡ Fetching data from database..."):
     filtered_df = fetch_filtered_data(start_iso, end_iso)
 
 if filtered_df.empty:
@@ -157,7 +190,7 @@ else:
     c2.metric("Total Period Revenue", f"₹{total_rev:,.2f}")
     c3.metric("Packages Tracked", filtered_df["awb number"].dropna().nunique())
 
-    # --- EXPORT ledgers ---
+    # --- EXPORT LEDGERS ---
     EXPORT_COLUMNS = [
         "Name", "SR Order ID", "Created at", "Financial Status", "Fulfillment Status",
         "Currency", "Subtotal", "Shipping", "Taxes", "Total", "Shipping Method",
