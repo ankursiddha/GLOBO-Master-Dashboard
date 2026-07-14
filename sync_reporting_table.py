@@ -119,8 +119,11 @@ def sync_master_reporting_table():
         
         b_province = order.get("billing_address_province") if order.get("billing_address_province") is not None else order.get("billing_province_name")
         s_province = order.get("shipping_address_province") if order.get("shipping_address_province") is not None else order.get("shipping_province_name")
-        pay_mode = order.get("gateway") if order.get("gateway") is not None else order.get("payment_mode")
+        # Updated to check payment_method from your database table layout
+        pay_mode = order.get("gateway") if order.get("gateway") is not None else (order.get("payment_mode") if order.get("payment_mode") is not None else order.get("payment_method"))
 
+
+        
         for i in range(max_sub_rows):
             row_data = {
                 "shopify_order_id": str(order_id),
