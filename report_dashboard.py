@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import re
 import datetime
 from supabase import create_client, Client
 
@@ -13,156 +12,92 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 st.set_page_config(page_title="GLOBO Master Analytics Engine", layout="wide")
 
 st.title("📊 GLOBO Master Report & Advanced Export Ledger")
-st.subheader("Granular Analytics Dashboard — Server-Optimized Edition")
+st.subheader("⚡ High Performance Server-Cached Database Edition")
 
-def clean_shopify_name(name_str):
-    """Removes the leading '#' hash symbol and standardizes case format for precision evaluation."""
-    if not name_str:
-        return ""
-    return str(name_str).replace("#", "").strip().upper()
-
-def is_shiprocket_wildcard_match(shopify_clean_name, sr_channel_order_id):
-    """
-    Uses explicit boundary scanning to match GLOBO1001 with R_GLOBO1001, GLOBO1001-C, or GLOBO1001-C1.
-    Strictly prevents substring leaks so GLOBO1001 NEVER matches with GLOBO10011.
-    """
-    if not shopify_clean_name or not sr_channel_order_id:
-        return False
-        
-    sr_id = str(sr_channel_order_id).strip().upper()
-    
-    # Escape any potential characters to make string evaluation engine safe
-    escaped_target = re.escape(shopify_clean_name)
-    
-    # Regex breakdown: Looks for target string bounded by the start/end of a line, or symbols like _, -, or spaces.
-    # This guarantees numbers at the end (like 11 vs 1) don't bleed across fields.
-    pattern = rf"(?:^|[^A-Z0-9]){escaped_target}(?:[^A-Z0-9]|$)"
-    
-    return bool(re.search(pattern, sr_id))
-
-def fetch_filtered_data(start_iso, end_iso):
-    """Queries Supabase with precise server-side date constraints AND full pagination loop."""
-    all_orders = []
+def fetch_prebuilt_ledger(start_iso, end_iso):
+    """Fetches transactional data sub-rows cleanly from master_reporting_ledger."""
+    all_rows = []
     chunk_size = 1000
     start_idx = 0
     
     while True:
-        res = supabase.table("shopify_orders") \
+        res = supabase.table("master_reporting_ledger") \
                       .select("*") \
-                      .gte("created_at", start_iso) \
-                      .lte("created_at", end_iso) \
+                      .gte("Created at", start_iso) \
+                      .lte("Created at", end_iso) \
                       .range(start_idx, start_idx + chunk_size - 1) \
                       .execute()
         
         data_chunk = res.data
         if not data_chunk:
             break
-        all_orders.extend(data_chunk)
+        all_rows.extend(data_chunk)
         if len(data_chunk) < chunk_size:
             break
         start_idx += chunk_size
         
-    df_orders = pd.DataFrame(all_orders)
-    
-    if df_orders.empty:
-        return pd.DataFrame()
-        
-    order_ids = df_orders["order_id"].tolist()
-    
-    # Query child tables using batch chunking to avoid query limit bounds
-    df_items = pd.DataFrame()
-    if order_ids:
-        for i in range(0, len(order_ids), 500):
-            chunk = order_ids[i:i+500]
-            res = supabase.table("shopify_order_items").select("*").in_("order_id", chunk).execute()
-            if res.data:
-                df_items = pd.concat([df_items, pd.DataFrame(res.data)], ignore_index=True)
-                
-    # Pull Shiprocket shipment logs for comparative scan evaluations
-    df_shipments = pd.DataFrame()
-    try:
-        # Load the shipments in chunks to make sure we don't hit payload capacity
-        sr_start = 0
-        while True:
-            sr_res = supabase.table("shiprocket_shipments").select("*").range(sr_start, sr_start + 999).execute()
-            if not sr_res.data:
-                break
-            df_shipments = pd.concat([df_shipments, pd.DataFrame(sr_res.data)], ignore_index=True)
-            if len(sr_res.data) < 1000:
-                break
-            sr_start += 1000
-    except Exception as e:
-        print(f"Non-critical fallback handling applied to Shiprocket payload extraction: {e}")
+    df = pd.DataFrame(all_rows)
+    if not df.empty:
+        df["created_at_dt"] = pd.to_datetime(df["Created at"], errors='coerce').dt.tz_localize(None)
+    return df
 
-    # Assemble Aligned Relational Matrix
-    df_orders["created_at_dt"] = pd.to_datetime(df_orders["created_at"], errors='coerce').dt.tz_localize(None)
-    
-    final_rows = []
-    for _, order in df_orders.iterrows():
-        oid = order.get("order_id")
-        raw_name = order.get("name")
-        clean_name = clean_shopify_name(raw_name)
-        
-        o_items = df_items[df_items["order_id"] == oid] if not df_items.empty else pd.DataFrame()
-        
-        # --- FIXED SEARCH BLOCK: SCAN SHIPMENTS TABLE USING BOUNDARY MATCH RULES ---
-        if not df_shipments.empty and clean_name:
-            # Filters the shipments cache matching only clean string variants matching target constraints
-            matched_ships_mask = df_shipments["channel_order_id"].apply(lambda x: is_shiprocket_wildcard_match(clean_name, x))
-            o_ships = df_shipments[matched_ships_mask]
-        else:
-            o_ships = pd.DataFrame()
-        
-        max_sub_rows = max(len(o_items), len(o_ships), 1)
-        for i in range(max_sub_rows):
-            row_data = {
-                "Name": raw_name, 
-                "SR Order ID": None,
-                "Created at": order.get("created_at"), 
-                "created_at_dt": order.get("created_at_dt"),
-                "Financial Status": order.get("financial_status"), 
-                "Fulfillment Status": order.get("fulfillment_status"),
-                "Currency": order.get("currency"), 
-                "Subtotal": order.get("subtotal_price"), 
-                "Shipping": order.get("total_shipping_price_set"),
-                "Taxes": order.get("total_tax"), 
-                "Total": order.get("total_price"), 
-                "Shipping Method": order.get("shipping_method"),
-                "Outstanding Balance": order.get("outstanding_balance"), 
-                "Tax 1 Name": None, 
-                "Tax 1 Value": None, 
-                "Billing Province Name": order.get("billing_address_province"),
-                "Shipping Province Name": order.get("shipping_address_province"), 
-                "Payment Mode": order.get("gateway"), 
-                "Lineitem name": None, 
-                "Lineitem quantity": None, 
-                "Lineitem price": None, 
-                "HSN CODE": None,
-                "SHOPIFY DELIVERY STATUS": order.get("delivery_status"), 
-                "awb number": None, 
-                "SHIPROCKET DELIVERY STATUS": None
-            }
-            if i < len(o_items):
-                item = o_items.iloc[i]
-                row_data["Tax 1 Name"] = item.get("tax_1_name")
-                row_data["Tax 1 Value"] = item.get("tax_1_value")
-                row_data["Lineitem name"] = item.get("lineitem_name") or item.get("title")
-                row_data["Lineitem quantity"] = item.get("lineitem_quantity") or item.get("quantity")
-                row_data["Lineitem price"] = item.get("lineitem_price") or item.get("price")
-                row_data["HSN CODE"] = item.get("hsn_code")
-            if i < len(o_ships):
-                ship = o_ships.iloc[i]
-                row_data["SR Order ID"] = ship.get("channel_order_id")
-                row_data["awb number"] = ship.get("awb_number")
-                row_data["SHIPROCKET DELIVERY STATUS"] = ship.get("status")
-            final_rows.append(row_data)
-            
-    master_df = pd.DataFrame(final_rows)
-    if not master_df.empty:
-        master_df = master_df.sort_values(by="Created at", ascending=False)
-    return master_df
+def visually_aggregate_ledger(df):
+    """
+    Groups duplicate rows by Order Name. Order-level fields stay single, 
+    while multi-line items and tracking matches merge cleanly into 
+    multi-line strings inside a single row cell block.
+    """
+    if df.empty:
+        return df
 
-# --- SIDEBAR FILTERS ---
+    # Replace None values with empty text to avoid string join issues
+    string_cols = [
+        "SR Order ID", "Tax 1 Name", "Tax 1 Value", "Lineitem name", 
+        "Lineitem quantity", "Lineitem price", "HSN CODE", "awb number", 
+        "SHIPROCKET DELIVERY STATUS"
+    ]
+    for c in string_cols:
+        if c in df.columns:
+            df[c] = df[c].fillna("").astype(str)
+
+    # Sorting sequentially by original creation timeline
+    df = df.sort_values(by="Created at", ascending=False)
+
+    # Define aggregation behavior map
+    agg_rules = {
+        "Created at": "first",
+        "created_at_dt": "first",
+        "Financial Status": "first",
+        "Fulfillment Status": "first",
+        "Currency": "first",
+        "Subtotal": "first",
+        "Shipping": "first",
+        "Taxes": "first",
+        "Total": "first",
+        "Shipping Method": "first",
+        "Outstanding Balance": "first",
+        "Billing Province Name": "first",
+        "Shipping Province Name": "first",
+        "Payment Mode": "first",
+        "SHOPIFY DELIVERY STATUS": "first",
+        
+        # Unique tracking/item columns merge using newlines (\n) to segment the cells
+        "SR Order ID": lambda x: "\n".join([v for v in x if v.strip()]),
+        "Tax 1 Name": lambda x: "\n".join([v for v in x if v.strip()]),
+        "Tax 1 Value": lambda x: "\n".join([v for v in x if v.strip()]),
+        "Lineitem name": lambda x: "\n".join([v for v in x if v.strip()]),
+        "Lineitem quantity": lambda x: "\n".join([v for v in x if v.strip()]),
+        "Lineitem price": lambda x: "\n".join([v for v in x if v.strip()]),
+        "HSN CODE": lambda x: "\n".join([v for v in x if v.strip()]),
+        "awb number": lambda x: "\n".join([v for v in x if v.strip()]),
+        "SHIPROCKET DELIVERY STATUS": lambda x: "\n".join([v for v in x if v.strip()])
+    }
+
+    # Execute structural grouping by main Order Name identifier
+    grouped = df.groupby("Name", as_index=False).agg(agg_rules)
+    return grouped.sort_values(by="Created at", ascending=False)
+
+# --- SIDEBAR COMPACT FILTERS ---
 st.sidebar.header("📅 Query Range Controller")
 filter_type = st.sidebar.radio("Mode:", ["Exact Calendar Dates", "Whole Month / Year"])
 
@@ -188,13 +123,16 @@ else:
     else:
         end_iso = f"{(datetime.date(year, month_num + 1, 1) - datetime.timedelta(days=1)).isoformat()}T23:59:59Z"
 
-# --- RUN PERFORMANCE OPTIMIZED PIPELINE ---
-with st.spinner("⚡ Fetching data from database..."):
-    filtered_df = fetch_filtered_data(start_iso, end_iso)
+# --- EXECUTE HIGH SPEED FETCH ---
+with st.spinner("⚡ Fetching compiled data matrices..."):
+    raw_df = fetch_prebuilt_ledger(start_iso, end_iso)
 
-if filtered_df.empty:
+if raw_df.empty:
     st.warning("ℹ️ No records found matching this date slice.")
 else:
+    # Apply our custom cell merge aggregation layer
+    filtered_df = visually_aggregate_ledger(raw_df)
+
     # --- SEARCH BAR ---
     search_query = st.text_input("🔍 Search within filtered results (Order Name, AWB, Province)", "")
     if search_query:
@@ -210,10 +148,13 @@ else:
     c1, c2, c3 = st.columns(3)
     c1.metric("Unique Orders Found", filtered_df["Name"].nunique())
     
-    unique_order_totals = filtered_df.drop_duplicates(subset=["Name"])
-    total_rev = pd.to_numeric(unique_order_totals["Total"], errors='coerce').sum()
+    total_rev = pd.to_numeric(filtered_df["Total"], errors='coerce').sum()
     c2.metric("Total Period Revenue", f"₹{total_rev:,.2f}")
-    c3.metric("Packages Tracked", filtered_df["awb number"].dropna().nunique())
+    
+    # Clean split lines extraction to count true discrete tracking entities
+    all_awbs = "\n".join(filtered_df["awb number"].dropna().tolist()).split("\n")
+    unique_awbs_count = len(set([a.strip() for a in all_awbs if a.strip()]))
+    c3.metric("Packages Tracked", unique_awbs_count)
 
     # --- EXPORT LEDGERS ---
     EXPORT_COLUMNS = [
@@ -223,9 +164,11 @@ else:
         "Shipping Province Name", "Payment Mode", "Lineitem name", "Lineitem quantity",
         "Lineitem price", "HSN CODE", "SHOPIFY DELIVERY STATUS", "awb number", "SHIPROCKET DELIVERY STATUS"
     ]
+    
     for col in EXPORT_COLUMNS:
-        if col not in filtered_df.columns: filtered_df[col] = np.nan
-        
+        if col not in filtered_df.columns: 
+            filtered_df[col] = np.nan
+            
     export_ready_df = filtered_df[EXPORT_COLUMNS]
     
     csv_data = export_ready_df.to_csv(index=False).encode('utf-8')
