@@ -28,13 +28,26 @@ def get_4_char_hsn(variant_id):
             
         if res.status_code == 200:
             variant_data = res.json().get('variant', {})
+            
+            # --- SURGICAL FIX 1: CHECK IN BOTH PLACES WHERE SHOPIFY STORES THE HSN ---
+            # 1. Try directly on the variant object first (the way that worked for your first half)
             hsn_raw = variant_data.get('harmonized_system_code')
+            
+            # 2. If it's not directly on the variant, follow the link to its Inventory Item
+            if not hsn_raw:
+                inventory_item_id = variant_data.get('inventory_item_id')
+                if inventory_item_id:
+                    inv_url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/inventory_items/{inventory_item_id}.json"
+                    inv_res = requests.get(inv_url, headers=shopify_headers)
+                    if inv_res.status_code == 200:
+                        hsn_raw = inv_res.json().get('inventory_item', {}).get('harmonized_system_code')
             
             if hsn_raw:
                 # Clean out any non-numeric symbols if present
                 clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
                 # Slice down to strictly the first 4 characters as discussed
                 return clean_hsn[:4]
+                
     except Exception as e:
         print(f"❌ Error fetching variant {variant_id} from Shopify: {e}")
     return None
@@ -42,9 +55,10 @@ def get_4_char_hsn(variant_id):
 def repair_item_level_hsn():
     print("--- 🔍 INITIATING TARGETED SUB-ROW HSN REPAIR ENGINE ---")
     
-    # 1. Fetch only line items from the sub-row table where HSN is missing
-    db_res = supabase.table("shopify_order_items").is_("hsn_code", "null").execute()
-    items_to_fix = db_res.data
+    # --- SURGICAL FIX 2: VERSION-PROOF METHOD TO FIND MISSING RECORDS ---
+    # We fetch the table and safely filter in memory to bypass the SyncRequestBuilder '.is_' error
+    db_res = supabase.table("shopify_order_items").select("*").execute()
+    items_to_fix = [row for row in db_res.data if row.get("hsn_code") is None or str(row.get("hsn_code")).lower() in ["none", "null", ""]]
     
     if not items_to_fix:
         print("✅ Perfect! No NULL HSN entries found in shopify_order_items.")
@@ -64,7 +78,7 @@ def repair_item_level_hsn():
             
         print(f"Processing Item Variant {variant_id} for Order {order_id}...")
         
-        # 2. Get the 4-digit HSN code from Shopify
+        # 2. Get the 4-digit HSN code from Shopify (using our improved search function)
         hsn_4 = get_4_char_hsn(variant_id)
         
         if hsn_4:
