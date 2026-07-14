@@ -18,15 +18,14 @@ try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     print("✅ Supabase client initialized successfully.")
 except Exception as e:
-    print(f"❌ CRITICAL: Failed to initialize Supabase client. Check keys. Error: {e}")
+    print(f"❌ CRITICAL: Failed to initialize Supabase client. Error: {e}")
 
 shopify_headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN, "Content-Type": "application/json"}
 
 
 def get_4_char_hsn(variant_id, order_id=None):
-    """Hits Shopify APIs with deep structural debug checks to locate HSN codes."""
+    """Hits Shopify APIs to locate HSN codes."""
     if not variant_id or str(variant_id).lower() in ["none", ""]:
-        print(f"   ⚠️ Skipping Variant Lookup: Received empty/invalid variant_id.")
         return None
         
     try:
@@ -34,45 +33,31 @@ def get_4_char_hsn(variant_id, order_id=None):
         res = requests.get(url, headers=shopify_headers)
         
         if res.status_code == 429:
-            print("   ⚠️ Shopify rate limit (429) hit. Waiting 5 seconds...")
             time.sleep(5)
             return get_4_char_hsn(variant_id, order_id)
             
-        if res.status_code == 404:
-            print(f"   ❌ Variant {variant_id} returned 404 (Not Found) on Shopify. (May be deleted/archived)")
-            return None
+        if res.status_code == 200:
+            variant_data = res.json().get('variant', {})
+            hsn_raw = variant_data.get('harmonized_system_code')
             
-        if res.status_code != 200:
-            print(f"   ❌ Variant API returned unexpected status {res.status_code}. Response: {res.text}")
-            return None
-            
-        # If variant exists, analyze its payload
-        variant_data = res.json().get('variant', {})
-        hsn_raw = variant_data.get('harmonized_system_code')
-        
-        # Scenario A: HSN is stored directly on the Variant (like your first 2500 items)
-        if hsn_raw:
-            clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
-            return clean_hsn[:4]
-            
-        # Scenario B: Target HSN is nested on the Linked Inventory Item
-        inventory_item_id = variant_data.get('inventory_item_id')
-        if inventory_item_id:
-            inv_url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/inventory_items/{inventory_item_id}.json"
-            inv_res = requests.get(inv_url, headers=shopify_headers)
-            
-            if inv_res.status_code == 200:
-                inv_hsn = inv_res.json().get('inventory_item', {}).get('harmonized_system_code')
-                if inv_hsn:
-                    clean_hsn = "".join([c for c in str(inv_hsn) if c.isdigit()])
-                    return clean_hsn[:4]
-                else:
-                    print(f"   ⚠️ Variant {variant_id} exists, but HSN/Harmonized Code field is completely empty in Shopify.")
-            else:
-                print(f"   ❌ Failed to query Inventory Item {inventory_item_id}. Status: {inv_res.status_code}")
+            # 1. Try direct variant data check
+            if hsn_raw:
+                clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
+                return clean_hsn[:4]
                 
+            # 2. Try connected inventory item endpoint fallback
+            inventory_item_id = variant_data.get('inventory_item_id')
+            if inventory_item_id:
+                inv_url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/inventory_items/{inventory_item_id}.json"
+                inv_res = requests.get(inv_url, headers=shopify_headers)
+                if inv_res.status_code == 200:
+                    inv_hsn = inv_res.json().get('inventory_item', {}).get('harmonized_system_code')
+                    if inv_hsn:
+                        clean_hsn = "".join([c for c in str(inv_hsn) if c.isdigit()])
+                        return clean_hsn[:4]
+                        
     except Exception as e:
-        print(f"   ❌ Connection error trying to reach Shopify for Variant {variant_id}: {e}")
+        print(f"   ❌ Connection error reaching Shopify for Variant {variant_id}: {e}")
         
     return None
 
@@ -80,17 +65,14 @@ def get_4_char_hsn(variant_id, order_id=None):
 def repair_item_level_hsn():
     print("\n--- 🔍 INITIATING TARGETED SUB-ROW HSN REPAIR ENGINE ---")
     
-    # 1. FETCH & PROCESS SAFELY WITHOUT USING BUGGY '.is_' OR '.eq()' BUILDERS
     try:
-        print("Querying line items from shopify_order_items...")
         db_res = supabase.table("shopify_order_items").select("*").execute()
         raw_data = db_res.data
-        print(f"Successfully retrieved {len(raw_data)} total entries from DB.")
     except Exception as e:
-        print(f"❌ CRITICAL DATABASE ERROR: Could not read shopify_order_items table. Details: {e}")
+        print(f"❌ CRITICAL DATABASE ERROR: Could not read table. Details: {e}")
         return
 
-    # Filter out records missing their HSN codes safely in Python memory
+    # Filter out missing records
     items_to_fix = []
     for row in raw_data:
         hsn_val = row.get("hsn_code")
@@ -101,35 +83,38 @@ def repair_item_level_hsn():
         print("✅ Perfect! No missing (NULL) HSN entries found in shopify_order_items table.")
         return
         
-    print(f"🚨 Identified {len(items_to_fix)} items that have missing HSN codes in your database.")
+    print(f"🚨 Identified {len(items_to_fix)} items requiring HSN updates.")
     repaired_count = 0
     
     for item in items_to_fix:
-        row_id = item.get("id")
+        # --- FIXED KEY MATCHING: CHANGED FROM 'id' TO 'lineitem_id' ---
+        row_id = item.get("lineitem_id") 
         variant_id = item.get("variant_id")
         order_id = item.get("order_id")
         
-        if not variant_id:
-            print(f"⚠️ Skipping row {row_id} (Order {order_id}) because variant_id is missing/NULL in your DB.")
+        if not row_id:
+            print(f"⚠️ Skipping row: lineitem_id is completely missing from this data row record.")
             continue
             
-        print(f"Processing Item Variant {variant_id} for Order {order_id} (Row ID: {row_id})...")
+        if not variant_id:
+            continue
+            
+        print(f"Processing Line Item {row_id} (Variant {variant_id}) for Order {order_id}...")
         
-        # 2. Fetch the clean HSN
         hsn_4 = get_4_char_hsn(variant_id, order_id=order_id)
         
         if hsn_4:
             try:
-                # 3. Update only the single column in Supabase
-                supabase.table("shopify_order_items").update({"hsn_code": hsn_4}).eq("id", row_id).execute()
+                # --- FIXED UPDATE MATCHING COLUMN KEY ---
+                supabase.table("shopify_order_items").update({"hsn_code": hsn_4}).eq("lineitem_id", row_id).execute()
                 repaired_count += 1
-                print(f" 🎯 SUCCESS: Patched HSN [{hsn_4}] onto Row {row_id}")
+                print(f" 🎯 SUCCESS: Patched HSN [{hsn_4}] onto Line Item {row_id}")
             except Exception as db_err:
-                print(f" ❌ DATABASE WRITE ERROR: Failed writing HSN [{hsn_4}] to row {row_id}: {db_err}")
+                print(f" ❌ DATABASE WRITE ERROR: Failed writing HSN [{hsn_4}] to lineitem_id {row_id}: {db_err}")
         else:
             print(f" ⚠️ SKIP: Could not find HSN code inside Shopify for Variant {variant_id}.")
             
-        time.sleep(0.5)  # Safe spacing interval to protect API rates
+        time.sleep(0.5)
 
     print(f"\n🎉 Process Complete! Successfully patched {repaired_count} sub-rows in this run.")
 
