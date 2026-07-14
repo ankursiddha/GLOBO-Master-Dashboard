@@ -4,8 +4,8 @@ import requests
 from supabase import create_client, Client
 
 # --- PRODUCTION AUTHENTICATION CONFIGURATION ---
-SHOPIFY_STORE = os.environ.get("SHOPIFY_STORE_URL") or "globo-retail.myshopify.com"
-SHOPIFY_TOKEN = os.environ.get("SHOPIFY_ADMIN_ACCESS_TOKEN") or "shpat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+SHOPIFY_STORE = os.environ.get("SHOPIFY_STORE_URL") or "355b0d-2.myshopify.com"
+SHOPIFY_TOKEN = os.environ.get("SHOPIFY_ADMIN_ACCESS_TOKEN") or "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"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.supabase.co"
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
