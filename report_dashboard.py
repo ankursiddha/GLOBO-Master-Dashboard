@@ -66,7 +66,7 @@ def generate_excel_with_merged_cells(df_json):
     columns are physically merged into tall visual cells using openpyxl.
     Cached to optimize performance.
     """
-    df = pd.read_json(df_json)
+    df = pd.read_json(io.StringIO(df_json))
     if df.empty:
         wb = openpyxl.Workbook()
         output = io.BytesIO()
