@@ -14,8 +14,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- SAFE HISTORY SLABS (Strict Configuration Limits) ---
-LOCK_DATE_STR = "2024-03-30" 
-START_DATE_STR = "2024-04-01"
+LOCK_DATE_STR = "2025-09-27" 
+START_DATE_STR = "2025-09-27"
 
 def get_token():
     try:
