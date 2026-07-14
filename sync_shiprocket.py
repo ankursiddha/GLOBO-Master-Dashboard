@@ -37,6 +37,17 @@ def parse_shiprocket_date(date_str):
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except:
         return str(date_str)
+        
+
+def extract_numeric_id(globo_id):
+    """Extracts raw numbers from text IDs (like GLOBO9887 -> 9887) for perfect numeric sorting."""
+    if not globo_id:
+        return None
+    try:
+        nums = "".join([c for c in str(globo_id) if c.isdigit()])
+        return int(nums) if nums else None
+    except:
+        return None
 
 
 
