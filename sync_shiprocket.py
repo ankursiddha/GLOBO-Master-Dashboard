@@ -155,6 +155,7 @@ def sync_complete_shiprocket_history():
                         "shipment_id": str(db_shipment_id).strip(),
                         "order_id": str(o.get('id')),
                         "channel_order_id": globo_id,
+                        "order_id_int": extract_numeric_id(globo_id),  # <-- ADD THIS EXACT LINE
                         "awb_number": str(awb or "").strip(),
                         "courier_name": str(courier or "").strip() if courier else None,
                         "status": api_status,
