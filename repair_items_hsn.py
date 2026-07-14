@@ -40,12 +40,10 @@ def get_4_char_hsn(variant_id, order_id=None):
             variant_data = res.json().get('variant', {})
             hsn_raw = variant_data.get('harmonized_system_code')
             
-            # 1. Try direct variant data check
             if hsn_raw:
                 clean_hsn = "".join([c for c in str(hsn_raw) if c.isdigit()])
                 return clean_hsn[:4]
                 
-            # 2. Try connected inventory item endpoint fallback
             inventory_item_id = variant_data.get('inventory_item_id')
             if inventory_item_id:
                 inv_url = f"https://{SHOPIFY_STORE}/admin/api/2024-04/inventory_items/{inventory_item_id}.json"
@@ -63,49 +61,60 @@ def get_4_char_hsn(variant_id, order_id=None):
 
 
 def repair_item_level_hsn():
-    print("\n--- 🔍 INITIATING TARGETED SUB-ROW HSN REPAIR ENGINE ---")
+    print("\n--- 🔍 INITIATING TARGETED COMPREHENSIVE HSN REPAIR ENGINE ---")
     
-    try:
-        db_res = supabase.table("shopify_order_items").select("*").execute()
-        raw_data = db_res.data
-    except Exception as e:
-        print(f"❌ CRITICAL DATABASE ERROR: Could not read table. Details: {e}")
-        return
+    # --- FIXED: IMPLEMENTED PAGINATED FETCHING LOOP TO EXTRACT ALL 30k+ ROWS ---
+    all_items = []
+    chunk_size = 1000
+    start_idx = 0
+    
+    print("Downloading structural items database from Supabase...")
+    while True:
+        try:
+            res = supabase.table("shopify_order_items").select("*").range(start_idx, start_idx + chunk_size - 1).execute()
+            data_chunk = res.data
+            if not data_chunk:
+                break
+            all_items.extend(data_chunk)
+            if len(data_chunk) < chunk_size:
+                break
+            start_idx += chunk_size
+            print(f" Loaded {len(all_items)} total row items items so far...")
+        except Exception as e:
+            print(f"❌ CRITICAL DATABASE ERROR during data fetching. Details: {e}")
+            return
 
-    # Filter out missing records
+    print(f"✅ Total items loaded in memory matrix: {len(all_items)}")
+
+    # Filter out records where HSN is missing
     items_to_fix = []
-    for row in raw_data:
+    for row in all_items:
         hsn_val = row.get("hsn_code")
         if hsn_val is None or str(hsn_val).lower().strip() in ["none", "null", "", "nan"]:
             items_to_fix.append(row)
             
     if not items_to_fix:
-        print("✅ Perfect! No missing (NULL) HSN entries found in shopify_order_items table.")
+        print("✅ Perfect! No missing (NULL) HSN entries found across the entire database.")
         return
         
-    print(f"🚨 Identified {len(items_to_fix)} items requiring HSN updates.")
+    print(f"🚨 Identified {len(items_to_fix)} items across all historical indexes requiring HSN updates.")
     repaired_count = 0
     
     for item in items_to_fix:
-        # --- FIXED KEY MATCHING: CHANGED FROM 'id' TO 'lineitem_id' ---
         row_id = item.get("lineitem_id") 
         variant_id = item.get("variant_id")
         order_id = item.get("order_id")
         
         if not row_id:
-            print(f"⚠️ Skipping row: lineitem_id is completely missing from this data row record.")
             continue
-            
         if not variant_id:
             continue
             
         print(f"Processing Line Item {row_id} (Variant {variant_id}) for Order {order_id}...")
-        
         hsn_4 = get_4_char_hsn(variant_id, order_id=order_id)
         
         if hsn_4:
             try:
-                # --- FIXED UPDATE MATCHING COLUMN KEY ---
                 supabase.table("shopify_order_items").update({"hsn_code": hsn_4}).eq("lineitem_id", row_id).execute()
                 repaired_count += 1
                 print(f" 🎯 SUCCESS: Patched HSN [{hsn_4}] onto Line Item {row_id}")
@@ -114,7 +123,7 @@ def repair_item_level_hsn():
         else:
             print(f" ⚠️ SKIP: Could not find HSN code inside Shopify for Variant {variant_id}.")
             
-        time.sleep(0.5)
+        time.sleep(0.4)  # Safe speed threshold limit to safeguard Shopify API limits
 
     print(f"\n🎉 Process Complete! Successfully patched {repaired_count} sub-rows in this run.")
 
