@@ -1,0 +1,35 @@
+name: GLOBO Database Reporting Synchronization Engine
+
+on:
+  schedule:
+    # Triggers automatically every morning at 00:30 UTC (6:00 AM Indian Standard Time)
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+    # Allows you to trigger the synchronization manually at any time with a button click
+
+jobs:
+  build-and-sync:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out repository source tree
+      uses: actions/checkout@v4
+
+    - name: Set up Python Environment Matrix
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install Runtime Database Libraries
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas supabase requests
+
+    - name: Execute Server-Side Ledger Processing Pipeline
+      env:
+        # Securely maps your GitHub repository secrets to environment variables without hardcoding
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      run: |
+        python sync_reporting_table.py
