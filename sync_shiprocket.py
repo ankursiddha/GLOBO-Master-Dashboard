@@ -28,6 +28,18 @@ def get_token():
         print(f"❌ Shiprocket Authentication Crash: {e}")
     return None
 
+
+def parse_shiprocket_date(date_str):
+    if not date_str or str(date_str).lower() in ["none", "-", ""]:
+        return None
+    try:
+        dt = datetime.strptime(str(date_str).strip(), "%d %b %Y, %I:%M %p")
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return str(date_str)
+
+
+
 def generate_monthly_blocks(start_str):
     """Generates clean monthly search slices forward from start date to present day."""
     start_dt = datetime.strptime(start_str, "%Y-%m-%d")
@@ -151,7 +163,7 @@ def sync_complete_shiprocket_history():
                         "status": api_status,
                         "status_code": o.get('status_code'),
                         "onboarding_status": o.get('onboarding_status'),
-                        "created_at": str(raw_date) if raw_date else None
+                        "created_at": parse_shiprocket_date(raw_date)
                     }
 
                     # Stream write updates safely straight to your primary Supabase table layout
