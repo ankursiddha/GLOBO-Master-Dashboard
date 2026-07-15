@@ -119,7 +119,7 @@ def generate_excel_with_merged_cells(df_json):
             order_fill_map[name] = "yellow"
             continue
         
-        statuses = g_df["SHIPROCKET DELIVERY STATUS"].astype(str).str.strip().str.upper().tolist()
+        statuses = [str(s).strip().upper() for s in g_df["SHIPROCKET DELIVERY STATUS"].dropna().tolist()] if "SHIPROCKET DELIVERY STATUS" in g_df.columns else []
         has_delivered_or_cancelled = any("DELIVERED" in s or "CANCELLED" in s for s in statuses)
         if not has_delivered_or_cancelled:
             order_fill_map[name] = "red"
@@ -220,7 +220,7 @@ def render_html_merged_dashboard(raw_df):
             order_fill_map[name] = "row-voided"
             continue
         
-        statuses = g_df["SHIPROCKET DELIVERY STATUS"].astype(str).str.strip().str.upper().tolist()
+        statuses = [str(s).strip().upper() for s in g_df["SHIPROCKET DELIVERY STATUS"].dropna().tolist()] if "SHIPROCKET DELIVERY STATUS" in g_df.columns else []
         has_delivered_or_cancelled = any("DELIVERED" in s or "CANCELLED" in s for s in statuses)
         if not has_delivered_or_cancelled:
             order_fill_map[name] = "row-alert"
