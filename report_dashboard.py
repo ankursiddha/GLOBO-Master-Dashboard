@@ -160,16 +160,36 @@ def generate_excel_with_merged_cells(df_json):
             
     if current_order is not None:
         order_groups.append((start_row, ws.max_row))
-        
+
+    
     for s_row, e_row in order_groups:
+        # 1. Get the style for the group first
+        first_cell_name = ws.cell(row=s_row, column=EXPORT_COLUMNS.index("Name") + 1).value
+        group_style = order_fill_map.get(first_cell_name, "normal")
+        
+        # 2. Color EVERY row in the group (handles 1 row or 10 rows perfectly)
+        for r in range(s_row, e_row + 1):
+            for col_name in MASTER_COLS:
+                col_idx = EXPORT_COLUMNS.index(col_name) + 1
+                cell = ws.cell(row=r, column=col_idx)
+                if group_style == "yellow":
+                    cell.fill = yellow_fill
+                elif group_style == "red":
+                    cell.fill = red_fill
+
+        # 3. Only trigger the visual cell merge if there are multiple rows
         if s_row == e_row:
             continue
+            
         for col_name in MASTER_COLS:
             col_idx = EXPORT_COLUMNS.index(col_name) + 1
             ws.merge_cells(start_row=s_row, start_column=col_idx, end_row=e_row, end_column=col_idx)
-            master_cell = ws.cell(row=s_row, column=col_idx)
-            master_cell.alignment = center_align
-
+            
+            # Keep alignment centered for merged view
+            for r in range(s_row, e_row + 1):
+                ws.cell(row=r, column=col_idx).alignment = center_align
+                
+    
     for col in ws.columns:
         max_len = max(len(str(cell.value or '')) for cell in col)
         col_letter = openpyxl.utils.get_column_letter(col[0].column)
