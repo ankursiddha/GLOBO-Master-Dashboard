@@ -10,6 +10,9 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.s
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# --- START DATE FILTER ---
+START_DATE = "2026-04-01"
+
 def clean_shopify_name(name_str):
     if not name_str:
         return ""
@@ -55,6 +58,11 @@ def sync_master_reporting_table():
     # 1. Fetch data from source tables
     print("Fetching active tables from Supabase...")
     df_orders = fetch_all_rows_paginated("shopify_orders")
+    
+    # --- START DATE FILTER APPLICATION ---
+    df_orders["Created at"] = pd.to_datetime(df_orders["Created at"], errors='coerce')
+    df_orders = df_orders[df_orders["Created at"] >= pd.to_datetime(START_DATE)]
+    
     df_items = fetch_all_rows_paginated("shopify_order_items")
     df_shipments = fetch_all_rows_paginated("shiprocket_shipments")
     
