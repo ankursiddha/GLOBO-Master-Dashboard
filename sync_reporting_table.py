@@ -10,8 +10,8 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://wljftpkvsozgpxivbwiu.s
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh8xAvI6MZkhQQR3Q_Fk2mP9If"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- START DATE FILTER ---
-START_DATE = "2026-04-01"
+# --- START ORDER NAME CONTROLLER ---
+START_ORDER_NAME = "#GLOBO15546"
 
 def clean_shopify_name(name_str):
     if not name_str:
@@ -59,10 +59,20 @@ def sync_master_reporting_table():
     print("Fetching active tables from Supabase...")
     df_orders = fetch_all_rows_paginated("shopify_orders")
     
-    # --- START DATE FILTER APPLICATION ---
-    df_orders["created_at"] = pd.to_datetime(df_orders["created_at"], errors='coerce')
-    df_orders = df_orders[df_orders["created_at"] >= pd.to_datetime(START_DATE)]
-    
+    # --- DYNAMIC START ORDER NAME FILTER METHOD ---
+    if not df_orders.empty and START_ORDER_NAME:
+        # Normalize target string layouts for bulletproof string matches
+        match_mask = df_orders["name"].astype(str).str.strip() == START_ORDER_NAME.strip()
+        matched_order_rows = df_orders[match_mask]
+        
+        if not matched_order_rows.empty:
+            cutoff_timestamp = matched_order_rows.iloc[0].get("created_at")
+            if cutoff_timestamp:
+                df_orders = df_orders[df_orders["created_at"] >= cutoff_timestamp]
+                print(f"🎯 Filter applied successfully! Processing orders from milestone {START_ORDER_NAME} ({cutoff_timestamp}) onwards.")
+        else:
+            print(f"⚠️ Milestone '{START_ORDER_NAME}' not found in local shopify_orders batch yet. Processing all.")
+
     df_items = fetch_all_rows_paginated("shopify_order_items")
     df_shipments = fetch_all_rows_paginated("shiprocket_shipments")
     
