@@ -60,8 +60,8 @@ def sync_master_reporting_table():
     df_orders = fetch_all_rows_paginated("shopify_orders")
     
     # --- START DATE FILTER APPLICATION ---
-    df_orders["Created at"] = pd.to_datetime(df_orders["Created at"], errors='coerce')
-    df_orders = df_orders[df_orders["Created at"] >= pd.to_datetime(START_DATE)]
+    df_orders["created_at"] = pd.to_datetime(df_orders["created_at"], errors='coerce')
+    df_orders = df_orders[df_orders["created_at"] >= pd.to_datetime(START_DATE)]
     
     df_items = fetch_all_rows_paginated("shopify_order_items")
     df_shipments = fetch_all_rows_paginated("shiprocket_shipments")
