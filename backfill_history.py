@@ -99,10 +99,14 @@ def run_historical_backfill():
                 shopify_shipment_status = fulfillments[0].get("shipment_status")
 
             # --- MAP PARENT ---
+            # Parse the time zone offset string out to force native local calendar dates
+            raw_created_at = str(order["created_at"])
+            clean_created_at = raw_created_at.replace("T", " ").split("+")[0].split(".")[0].strip()
+
             parent_order = {
                 "order_id": order_id,
                 "name": current_order_name,                                
-                "created_at": order["created_at"],
+                "created_at": clean_created_at,  # <-- FIXED: Locked to native local time
                 "financial_status": order["financial_status"],        
                 "fulfillment_status": order["fulfillment_status"],    
                 "currency": order["currency"],
