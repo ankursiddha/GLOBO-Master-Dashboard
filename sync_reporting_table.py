@@ -11,7 +11,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- START ORDER NAME CONTROLLER ---
-START_ORDER_NAME = "#GLOBO18047"
+START_ORDER_NAME = "#GLOBO1001"
 
 def clean_shopify_name(name_str):
     if not name_str:
