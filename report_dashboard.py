@@ -94,6 +94,8 @@ def generate_excel_with_merged_cells(df_json):
     # NEW HIGHLIGHT FILLS
     yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     red_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+    purple_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid") # Soft Light Purple/Green Tint
+    grey_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")   # Light Slate Grey
     
     thin_side = Side(border_style="thin", color="D9D9D9")
     cell_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
@@ -114,17 +116,29 @@ def generate_excel_with_merged_cells(df_json):
     # Pre-calculate sub-row highlight states per order group cluster
     order_fill_map = {}
     for name, g_df in df.groupby("Name"):
-        f_status = str(g_df.iloc[0].get("Financial Status")).strip().lower()
+        first_row = g_df.iloc[0]
+        f_status = str(first_row.get("Financial Status")).strip().lower()
+        s_method = str(first_row.get("Shipping Method")).strip().upper()
+        
+        # 1. Voided State Evaluation
         if f_status == "voided":
-            order_fill_map[name] = "yellow"
+            if "PREPAID" in s_method:
+                order_fill_map[name] = "purple"
+            else:
+                order_fill_map[name] = "yellow"
             continue
         
+        # 2. Strict Delivery Status Validation (Isolated Exact "DELIVERED" Match Only)
         statuses = [str(s).strip().upper() for s in g_df["SHIPROCKET DELIVERY STATUS"].dropna().tolist()] if "SHIPROCKET DELIVERY STATUS" in g_df.columns else []
-        has_delivered_or_cancelled = any("DELIVERED" in s or "CANCELLED" in s for s in statuses)
-        if not has_delivered_or_cancelled:
+        has_exact_delivered = any(s == "DELIVERED" for s in statuses)
+        
+        if has_exact_delivered:
+            order_fill_map[name] = "normal"
+        elif not has_exact_delivered:
             order_fill_map[name] = "red"
         else:
-            order_fill_map[name] = "normal"
+            order_fill_map[name] = "grey"
+            
 
     for idx, row in df.iterrows():
         row_data = [None if pd.isna(row.get(c)) else row.get(c) for c in EXPORT_COLUMNS]
@@ -144,6 +158,11 @@ def generate_excel_with_merged_cells(df_json):
                 cell.fill = yellow_fill
             elif row_style == "red":
                 cell.fill = red_fill
+            elif row_style == "purple":
+                cell.fill = purple_fill
+            elif row_style == "grey":
+                cell.fill = grey_fill
+                
                 
             if EXPORT_COLUMNS[col_idx-1] in ["Name", "Lineitem name"]:
                 cell.alignment = left_align
@@ -221,6 +240,8 @@ def render_html_merged_dashboard(raw_df):
         .merged-table .row-normal td { background-color: #FFFFFF; }
         .merged-table .row-voided td { background-color: #FFF2CC !important; }
         .merged-table .row-alert td { background-color: #FCE4D6 !important; }
+        .merged-table .row-purple td { background-color: #E2EFDA !important; }
+        .merged-table .row-grey td { background-color: #F2F2F2 !important; }
         .merged-table tr:hover td { opacity: 0.9; }
     </style>
     <div style="overflow-x: auto; max-height: 600px; border: 1px solid #CBD5E1; border-radius: 6px;">
@@ -235,17 +256,29 @@ def render_html_merged_dashboard(raw_df):
     # Group to verify alert colors beforehand
     order_fill_map = {}
     for name, g_df in df.groupby("Name"):
-        f_status = str(g_df.iloc[0].get("Financial Status")).strip().lower()
+        first_row = g_df.iloc[0]
+        f_status = str(first_row.get("Financial Status")).strip().lower()
+        s_method = str(first_row.get("Shipping Method")).strip().upper()
+        
+        # 1. Voided State Evaluation
         if f_status == "voided":
-            order_fill_map[name] = "row-voided"
+            if "PREPAID" in s_method:
+                order_fill_map[name] = "row-purple"
+            else:
+                order_fill_map[name] = "row-voided"
             continue
         
+        # 2. Strict Delivery Status Validation (Isolated Exact "DELIVERED" Match Only)
         statuses = [str(s).strip().upper() for s in g_df["SHIPROCKET DELIVERY STATUS"].dropna().tolist()] if "SHIPROCKET DELIVERY STATUS" in g_df.columns else []
-        has_delivered_or_cancelled = any("DELIVERED" in s or "CANCELLED" in s for s in statuses)
-        if not has_delivered_or_cancelled:
+        has_exact_delivered = any(s == "DELIVERED" for s in statuses)
+        
+        if has_exact_delivered:
+            order_fill_map[name] = "row-normal"
+        elif not has_exact_delivered:
             order_fill_map[name] = "row-alert"
         else:
-            order_fill_map[name] = "row-normal"
+            order_fill_map[name] = "row-grey"
+            
 
     for _, row in df.iterrows():
         order_name = row.get("Name")
