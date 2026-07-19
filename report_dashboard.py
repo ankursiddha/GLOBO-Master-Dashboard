@@ -196,22 +196,33 @@ def generate_excel_with_merged_cells(df_json):
                 elif group_style == "red":
                     cell.fill = red_fill
 
+
+        
        # 3. Only trigger the visual cell merge if there are multiple rows
         if s_row == e_row:
             continue
             
         # Determine dynamic eligibility for merging the "SR Order ID" column
         sr_col_idx = EXPORT_COLUMNS.index("SR Order ID") + 1
-        sr_values = [str(ws.cell(row=r, column=sr_col_idx).value or '').strip() for r in range(s_row, e_row + 1)]
-        non_empty_sr_values = [v for v in sr_values if v != '']
         
-        # Merge SR Order ID if all rows share the same ID, or if exactly one row has the data and others are blank
+        # Clean values: treat None, NaN, and whitespace strings exactly the same
+        sr_values = []
+        for r in range(s_row, e_row + 1):
+            v = ws.cell(row=r, column=sr_col_idx).value
+            v_str = "" if pd.isna(v) or v is None else str(v).strip()
+            sr_values.append(v_str)
+            
+        non_empty_sr_values = [v for v in sr_values if v != ""]
+        unique_non_empty = list(set(non_empty_sr_values))
+        
+        # Merge SR Order ID if all rows are blank, if they share identical IDs, 
+        # or if exactly one unique ID exists across the cluster and other rows are blank
         merge_sr_order_id = False
         if len(set(sr_values)) == 1:
             merge_sr_order_id = True
-        elif len(set(non_empty_sr_values)) == 1:
-            # Set the single found value to the top cell before merging so it doesn't get lost
-            ws.cell(row=s_row, column=sr_col_idx).value = non_empty_sr_values[0]
+        elif len(unique_non_empty) == 1:
+            # Explicitly write the single true value to the first cell before merging
+            ws.cell(row=s_row, column=sr_col_idx).value = unique_non_empty[0]
             merge_sr_order_id = True
 
         # Combine default master columns with the conditionally approved sub-row column
