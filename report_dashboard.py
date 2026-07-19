@@ -196,17 +196,37 @@ def generate_excel_with_merged_cells(df_json):
                 elif group_style == "red":
                     cell.fill = red_fill
 
-        # 3. Only trigger the visual cell merge if there are multiple rows
+       # 3. Only trigger the visual cell merge if there are multiple rows
         if s_row == e_row:
             continue
             
-        for col_name in MASTER_COLS:
+        # Determine dynamic eligibility for merging the "SR Order ID" column
+        sr_col_idx = EXPORT_COLUMNS.index("SR Order ID") + 1
+        sr_values = [str(ws.cell(row=r, column=sr_col_idx).value or '').strip() for r in range(s_row, e_row + 1)]
+        non_empty_sr_values = [v for v in sr_values if v != '']
+        
+        # Merge SR Order ID if all rows share the same ID, or if exactly one row has the data and others are blank
+        merge_sr_order_id = False
+        if len(set(sr_values)) == 1:
+            merge_sr_order_id = True
+        elif len(set(non_empty_sr_values)) == 1:
+            # Set the single found value to the top cell before merging so it doesn't get lost
+            ws.cell(row=s_row, column=sr_col_idx).value = non_empty_sr_values[0]
+            merge_sr_order_id = True
+
+        # Combine default master columns with the conditionally approved sub-row column
+        columns_to_merge = list(MASTER_COLS)
+        if merge_sr_order_id and "SR Order ID" not in columns_to_merge:
+            columns_to_merge.append("SR Order ID")
+            
+        for col_name in columns_to_merge:
             col_idx = EXPORT_COLUMNS.index(col_name) + 1
             ws.merge_cells(start_row=s_row, start_column=col_idx, end_row=e_row, end_column=col_idx)
             
             # Keep alignment centered for merged view
             for r in range(s_row, e_row + 1):
                 ws.cell(row=r, column=col_idx).alignment = center_align
+                
                 
     
     for col in ws.columns:
