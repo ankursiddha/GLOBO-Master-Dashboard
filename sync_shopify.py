@@ -5,7 +5,7 @@ import datetime
 from supabase import create_client, Client
 
 # --- 1. BACKLOG & PIPELINE CONTROLS (Preserved Exactly) ---
-START_ORDER_NAME = os.environ.get("START_ORDER_INPUT") or "#GLOBO13552"
+START_ORDER_NAME = os.environ.get("START_ORDER_INPUT") or "#GLOBO18047"
 BATCH_SIZE = 50                  # Number of orders to pull per API request page
 
 # --- 2. CONFIGURATION & DEPLOYMENT KEYS ---
