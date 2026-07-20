@@ -231,11 +231,24 @@ def run_historical_backfill():
                 shipping_lines = order.get("shipping_lines", [])
                 primary_shipping_line = shipping_lines[0] if shipping_lines else {}
                 shipping_method = primary_shipping_line.get("title")
+
                 
-                if primary_shipping_line.get("is_removed", False):
+                
+                # Calculate total refunded shipping across all refund adjustments
+                total_shipping_refunded = 0.0
+                for refund in order.get("refunds", []):
+                    for adj in refund.get("order_adjustments", []):
+                        if adj.get("kind") == "shipping_refund":
+                            total_shipping_refunded += abs(float(adj.get("amount", 0)))
+
+                raw_shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
+
+                if primary_shipping_line.get("is_removed", False) or (raw_shipping_cost > 0 and total_shipping_refunded >= raw_shipping_cost) or order.get("financial_status") == "voided":
                     shipping_cost = 0.0
                 else:
-                    shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
+                    shipping_cost = max(0.0, raw_shipping_cost - total_shipping_refunded)
+
+            
 
             parent_order = {
                 "order_id": order_id,
