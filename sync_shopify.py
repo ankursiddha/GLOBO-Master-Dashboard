@@ -237,13 +237,6 @@ def run_historical_backfill():
                 else:
                     shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
 
-
-
-
-
-            
-                    
-
             parent_order = {
                 "order_id": order_id,
                 "name": current_order_name,                                
@@ -272,19 +265,20 @@ def run_historical_backfill():
                     break
                 except Exception:
                     time.sleep(2)
-if not existing_parent or not existing_parent.data:
- print(f"✨ [NEW ORDER] Inserted: {current_order_name} (ID: {order_id})")
-else:
- old_data = existing_parent.data[0]
- mutations = []
- for key, new_val in parent_order.items():
-    old_val = old_data.get(key)
-    # Standardize ISO timestamps for comparison to prevent false timezone mutation logs
-    clean_old = str(old_val).replace("T", " ").split("+")[0].split(".")[0].strip() if old_val else ""
-    clean_new = str(new_val).replace("T", " ").split("+")[0].split(".")[0].strip() if new_val else ""
-    
-    if clean_old != clean_new:
-        mutations.append(f"'{key}': {old_val} ➡️ {new_val}")
+
+            if not existing_parent or not existing_parent.data:
+                print(f"✨ [NEW ORDER] Inserted: {current_order_name} (ID: {order_id})")
+            else:
+                old_data = existing_parent.data[0]
+                mutations = []
+                for key, new_val in parent_order.items():
+                    old_val = old_data.get(key)
+                    # Standardize ISO timestamps for comparison to prevent false timezone mutation logs
+                    clean_old = str(old_val).replace("T", " ").split("+")[0].split(".")[0].strip() if old_val else ""
+                    clean_new = str(new_val).replace("T", " ").split("+")[0].split(".")[0].strip() if new_val else ""
+                    
+                    if clean_old != clean_new:
+                        mutations.append(f"'{key}': {old_val} ➡️ {new_val}")
                 
                 if mutations:
                     print(f"🔄 [UPDATED ORDER] {current_order_name} structural changes: {', '.join(mutations)}")
