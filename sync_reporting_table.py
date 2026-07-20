@@ -213,18 +213,15 @@ def sync_master_reporting_table():
 
     print(f"\n📢 Interception Complete: Found {payload_nan_errors} illegal values embedded inside the compiled JSON structures.")
 
-    # 5. Purge and Batch Push Clear Records
-    print("\n--- 💾 PHASE 4: CLEARING LEDGER & EXECUTING DATABASE WRITE ---")
-    print("Purging old entries from master_reporting_ledger...")
-    supabase.table("master_reporting_ledger").delete().neq("Name", "FORCE_DELETE_ALL_ROWS").execute()
-
-    print(f"Uploading {len(checked_cleaned_rows)} processed transactional sub-rows to Supabase...")
+    # 5. Non-Destructive Upsert Write Executing Database Synchronization
+    print("\n--- 💾 PHASE 4: EXECUTING NON-DESTRUCTIVE DATABASE UPSERT ---")
+    print(f"Upserting {len(checked_cleaned_rows)} processed transactional sub-rows to Supabase...")
     batch_size = 500
     for idx in range(0, len(checked_cleaned_rows), batch_size):
         chunk = checked_cleaned_rows[idx:idx + batch_size]
         try:
-            supabase.table("master_reporting_ledger").insert(chunk).execute()
-            print(f" Pushed records {idx} to {idx + len(chunk)} successfully.")
+            supabase.table("master_reporting_ledger").upsert(chunk).execute()
+            print(f" Pushed/Updated records {idx} to {idx + len(chunk)} successfully.")
         except Exception as e:
             print(f" ❌ Database write blocked at index block {idx}: {e}")
             
