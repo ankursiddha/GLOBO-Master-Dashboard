@@ -1,11 +1,13 @@
-name: GLOBO Database Reporting Synchronization Engine
+name: MASTER Reporting Ledger Sync
 
 on:
   schedule:
-    # Triggers automatically every morning at 00:30 UTC (6:00 AM Indian Standard Time)
-    - cron: '30 0 * * *'
+    # 1. First run: 9:00 AM IST (3:30 AM UTC)
+    - cron: '30 3 * * *'
+    # 2. Second run: 11:00 PM IST (5:30 PM UTC)
+    - cron: '30 17 * * *'
   workflow_dispatch:
-    # Allows you to trigger the synchronization manually at any time with a button click
+    # Allows manual trigger at any time
 
 jobs:
   build-and-sync:
@@ -28,7 +30,6 @@ jobs:
 
     - name: Execute Server-Side Ledger Processing Pipeline
       env:
-        # Securely maps your GitHub repository secrets to environment variables without hardcoding
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       run: |
