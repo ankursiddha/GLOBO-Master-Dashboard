@@ -208,8 +208,16 @@ def run_historical_backfill():
                 shipping_cost = 0.0
             else:
                 payment_mode = resolved_payment_mode
-                shipping_method = order.get("shipping_lines", [{}])[0].get("title") if order.get("shipping_lines") else None
-                shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
+                shipping_lines = order.get("shipping_lines", [])
+                primary_shipping_line = shipping_lines[0] if shipping_lines else {}
+                shipping_method = primary_shipping_line.get("title")
+                
+                # Check if shipping line was removed during order edits/refunds
+                if primary_shipping_line.get("is_removed", False):
+                    shipping_cost = 0.0
+                else:
+                    shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
+                    
 
             parent_order = {
                 "order_id": order_id,
