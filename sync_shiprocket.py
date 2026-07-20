@@ -14,8 +14,8 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "sb_secret_60ve-Yh
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- SAFE HISTORY SLABS (Strict Configuration Limits) ---
-LOCK_DATE_STR = "2025-05-30" 
-START_DATE_STR = "2026-06-01"
+LOCK_DATE_STR = "2024-03-31" 
+START_DATE_STR = "2024-04-01"
 
 def get_token():
     try:
@@ -171,6 +171,12 @@ def sync_complete_shiprocket_history():
 
                     # --- 🔍 DYNAMIC LOG COMPARATOR LAYER ---
                     existing_record = supabase.table("shiprocket_shipments").select("*").eq("shipment_id", str(db_shipment_id).strip()).execute()
+
+                    if existing_record.data:
+                        existing_awb = str(existing_record.data[0].get("awb_number") or "").strip()
+                        # Preserves existing AWB if Shiprocket API returned a blank string
+                        if existing_awb and not mapped_payload["awb_number"]:
+                            mapped_payload["awb_number"] = existing_awb
                     
                     if not existing_record.data:
                         # Case 1: Brand new entry discovered
@@ -184,6 +190,9 @@ def sync_complete_shiprocket_history():
                         for key, value in mapped_payload.items():
                             old_val = old_row.get(key)
                             if str(old_val).strip() != str(value).strip():
+                                # Ignore overwriting existing AWB with empty string
+                                if key == "awb_number" and old_val and not str(value).strip():
+                                    continue
                                 if not (old_val is None and value == ""):
                                     changed_cells.append(f"'{key}' ({old_val} -> {value})")
                         
