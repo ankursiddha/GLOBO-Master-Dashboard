@@ -220,7 +220,10 @@ def sync_master_reporting_table():
     for idx in range(0, len(checked_cleaned_rows), batch_size):
         chunk = checked_cleaned_rows[idx:idx + batch_size]
         try:
-            supabase.table("master_reporting_ledger").upsert(chunk).execute()
+            supabase.table("master_reporting_ledger").upsert(
+    chunk, 
+    on_conflict="shopify_order_id,shopify_lineitem_id,shiprocket_shipment_id"
+).execute()
             print(f" Pushed/Updated records {idx} to {idx + len(chunk)} successfully.")
         except Exception as e:
             print(f" ❌ Database write blocked at index block {idx}: {e}")
