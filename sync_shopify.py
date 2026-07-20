@@ -4,7 +4,7 @@ import requests
 import datetime
 from supabase import create_client, Client
 
-# --- 1. BACKLOG & PIPELINE CONTROLS (Preserved Exactly) ---
+# --- 1. BACKLOG & PIPELINE CONTROLS ---
 START_ORDER_NAME = os.environ.get("START_ORDER_INPUT") or "#GLOBO18047"
 BATCH_SIZE = 50                  # Number of orders to pull per API request page
 
@@ -28,14 +28,14 @@ shopify_headers = {
 }
 
 def clean_and_slice_hsn(raw_hsn):
-    """Isolates numeric characters strictly and slices the first 4 (From HSN Repair Engine)"""
+    """Isolates numeric characters strictly and slices the first 4."""
     if not raw_hsn or str(raw_hsn).lower().strip() in ["none", "null", "nan", ""]:
         return None
     numeric_hsn = "".join([c for c in str(raw_hsn) if c.isdigit()])
     return numeric_hsn[:4] if numeric_hsn else None
 
 def fetch_live_hsn_from_shopify(variant_id):
-    """Deep Variant and Inventory Item check with integrated rate-limit back-off handling"""
+    """Deep Variant and Inventory Item check with integrated rate-limit back-off handling."""
     if not variant_id or str(variant_id).lower().strip() in ["none", "null", ""]:
         return None
         
@@ -52,7 +52,6 @@ def fetch_live_hsn_from_shopify(variant_id):
                 if hsn_code:
                     return hsn_code
                     
-                # Cross-API reference fallbacks to Inventory Level properties
                 inventory_item_id = variant_data.get("inventory_item_id")
                 if inventory_item_id:
                     inv_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/inventory_items/{inventory_item_id}.json"
@@ -66,7 +65,7 @@ def fetch_live_hsn_from_shopify(variant_id):
     return None
 
 def get_internal_id_from_name(order_name):
-    """Resolves visible order text milestone markers down to internal Shopify sequence integers"""
+    """Resolves visible order text milestone markers down to internal Shopify sequence integers."""
     url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?query=name:{requests.utils.quote(str(order_name).strip())}&status=any"
     try:
         res = requests.get(url, headers=shopify_headers)
@@ -112,7 +111,7 @@ def run_historical_backfill():
             order_id = str(order["id"])
             current_order_name = order["name"]
             
-            # Extract basic operational tax information layouts
+            # Extract basic tax parameters safely
             tax_lines = order.get("tax_lines", [])
             tax_1_name = tax_lines[0].get("title") if len(tax_lines) > 0 else None
             tax_1_value = float(tax_lines[0].get("price")) if len(tax_lines) > 0 else 0.0
@@ -127,6 +126,19 @@ def run_historical_backfill():
             raw_created_at = str(order["created_at"])
             clean_created_at = raw_created_at.replace("T", " ").split("+")[0].split(".")[0].strip()
 
+            # --- SAFE PAYMENT MODE & SHIPPING METHOD EXTRACTION ---
+            raw_gateway = order.get("payment_gateway_names", [None])[0] if order.get("payment_gateway_names") else "Unknown"
+            order_tags = str(order.get("tags", ""))
+            
+            if "COD_TO_PREPAID_CONVERTED" in order_tags or "CTP_" in order_tags:
+                payment_mode = "Razorpay (COD to Prepaid Conversion)"
+                shipping_method = "PREPAID"
+                shipping_cost = 0.0
+            else:
+                payment_mode = raw_gateway
+                shipping_method = order.get("shipping_lines", [{}])[0].get("title") if order.get("shipping_lines") else None
+                shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
+
             parent_order = {
                 "order_id": order_id,
                 "name": current_order_name,                                
@@ -135,14 +147,14 @@ def run_historical_backfill():
                 "fulfillment_status": order["fulfillment_status"],    
                 "currency": order["currency"],
                 "subtotal": float(order.get("current_subtotal_price", 0)),
-                "shipping": float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0)),
-                "taxes": float(order.get("total_tax", 0)),
-                "total": float(order.get("total_price", 0)),
+                "shipping": shipping_cost,
+                "taxes": float(order.get("current_total_tax", 0)) if order.get("current_total_tax") is not None else float(order.get("total_tax", 0)),
+                "total": float(order.get("current_total_price", 0)) if order.get("current_total_price") is not None else float(order.get("total_price", 0)),
                 "outstanding_balance": float(order.get("total_outstanding", 0)),
-                "shipping_method": order.get("shipping_lines", [{}])[0].get("title") if order.get("shipping_lines") else None,
-                "payment_method": order.get("payment_gateway_names", [None])[0] if order.get("payment_gateway_names") else None,
-                "billing_province_name": order.get("billing_address").get("province") if order.get("billing_address") else None,
-                "shipping_province_name": order.get("shipping_address").get("province") if order.get("shipping_address") else None,
+                "shipping_method": shipping_method,
+                "payment_method": payment_mode,
+                "billing_province_name": order.get("billing_address", {}).get("province") if order.get("billing_address") else None,
+                "shipping_province_name": order.get("shipping_address", {}).get("province") if order.get("shipping_address") else None,
                 "delivery_status": shopify_shipment_status,
                 "secondary_status": order.get("cancel_reason"),
             }
@@ -180,11 +192,25 @@ def run_historical_backfill():
                     if retry == 2: print(f"❌ Connection timeout writing parent tracking to table: {db_err}")
                     time.sleep(4)
             
-            # --- CHILD ITEM VALIDATION SUB-LOOP ---
+            # --- EXTRACT ONLY LEGITIMATE ACTIVE LINE ITEMS ---
+            active_fulfillment_item_ids = set()
+            for ful in order.get("fulfillments", []):
+                if ful.get("status") == "success":
+                    for f_item in ful.get("line_items", []):
+                        active_fulfillment_item_ids.add(str(f_item.get("id")))
+
             for item in order.get("line_items", []):
                 lineitem_id = str(item["id"])
                 variant_id = item.get("variant_id")
                 
+                # CRITICAL FILTER: Ignore edited out / removed ghost items
+                if active_fulfillment_item_ids and lineitem_id not in active_fulfillment_item_ids:
+                    print(f"🗑️ [SKIPPING REMOVED ITEM] Ignored ghost sub-row: {item['name']} (ID: {lineitem_id})")
+                    continue
+
+                if int(item.get("quantity", 0)) == 0:
+                    continue
+
                 existing_item = None
                 for retry in range(3):
                     try:
