@@ -1,7 +1,10 @@
-name: Live Shiprocket Data Sync
+name: Shiprocket Data Sync
 
 on:
   workflow_dispatch:
+  schedule:
+    # Runs automatically every night at 2:00 AM IST (8:30 PM UTC)
+    - cron: '30 20 * * *'
 
 jobs:
   run-shiprocket-sync:
