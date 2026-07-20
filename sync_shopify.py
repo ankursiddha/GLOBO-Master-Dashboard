@@ -64,6 +64,76 @@ def fetch_live_hsn_from_shopify(variant_id):
             time.sleep(2)
     return None
 
+def fetch_order_transactions_metrics(order):
+    """
+    Evaluates real-time transaction level breakdowns to resolve:
+    1. Condition 1: Cash Refunds vs Store Credit Refunds.
+    2. Condition 2: Split payments (excluding Store Credit share from cash total).
+    3. Condition 3: Filtering out failed transaction attempts and keeping successful non-store-credit gateways.
+    """
+    order_id = order["id"]
+    default_total = float(order.get("current_total_price", 0)) if order.get("current_total_price") is not None else float(order.get("total_price", 0))
+    raw_gateways = order.get("payment_gateway_names", [])
+    default_gateway = raw_gateways[0] if raw_gateways else "Unknown"
+
+    tx_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders/{order_id}/transactions.json"
+    try:
+        tx_res = requests.get(tx_url, headers=shopify_headers)
+        if tx_res.status_code != 200:
+            return default_total, default_gateway
+
+        transactions = tx_res.json().get("transactions", [])
+        if not transactions:
+            return default_total, default_gateway
+
+        # Successful primary payment sales (sale or capture)
+        successful_sales = [
+            t for t in transactions 
+            if str(t.get("status")).lower() == "success" and str(t.get("kind")).lower() in ["sale", "capture"]
+        ]
+
+        if not successful_sales:
+            return default_total, default_gateway
+
+        # Non-Store-Credit Gateways
+        non_sc_sales = [
+            t for t in successful_sales 
+            if "store_credit" not in str(t.get("gateway")).lower()
+        ]
+
+        # Determine Payment Gateway Name (Excluding Store Credit if mixed)
+        if non_sc_sales:
+            # Join multiple successful non-store-credit gateways if split across two real gateways
+            gateways_used = list(dict.fromkeys([str(t.get("gateway")).strip() for t in non_sc_sales if t.get("gateway")]))
+            resolved_payment_mode = " / ".join(gateways_used) if gateways_used else default_gateway
+            non_sc_sales_amount = sum(float(t.get("amount", 0)) for t in non_sc_sales)
+        else:
+            resolved_payment_mode = default_gateway
+            non_sc_sales_amount = sum(float(t.get("amount", 0)) for t in successful_sales)
+
+        # Handle Refunds Breakdown
+        successful_refunds = [
+            t for t in transactions 
+            if str(t.get("status")).lower() == "success" and str(t.get("kind")).lower() == "refund"
+        ]
+
+        cash_refund_amount = 0.0
+        for r in successful_refunds:
+            gateway_name = str(r.get("gateway")).lower()
+            # If refund is credited back to Store Credit, keep total unchanged.
+            # If refund is back to cash/card/original gateway, subtract from gross total.
+            if "store_credit" not in gateway_name:
+                cash_refund_amount += float(r.get("amount", 0))
+
+        # Condition 2 & Condition 1 final mathematical adjustment
+        final_total = max(0.0, non_sc_sales_amount - cash_refund_amount)
+
+        return final_total, resolved_payment_mode
+
+    except Exception as e:
+        print(f"⚠️ Error parsing transaction layer for order {order_id}: {e}")
+        return default_total, default_gateway
+
 def get_internal_id_from_name(order_name):
     """Resolves visible order text milestone markers down to internal Shopify sequence integers."""
     url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?query=name:{requests.utils.quote(str(order_name).strip())}&status=any"
@@ -127,15 +197,17 @@ def run_historical_backfill():
             clean_created_at = raw_created_at.replace("T", " ").split("+")[0].split(".")[0].strip()
 
             # --- SAFE PAYMENT MODE & SHIPPING METHOD EXTRACTION ---
-            raw_gateway = order.get("payment_gateway_names", [None])[0] if order.get("payment_gateway_names") else "Unknown"
             order_tags = str(order.get("tags", ""))
+            
+            # Execute deep transactions API evaluation for precise Conditions 1, 2, and 3
+            calculated_total, resolved_payment_mode = fetch_order_transactions_metrics(order)
             
             if "COD_TO_PREPAID_CONVERTED" in order_tags or "CTP_" in order_tags:
                 payment_mode = "Razorpay (COD to Prepaid Conversion)"
                 shipping_method = "PREPAID"
                 shipping_cost = 0.0
             else:
-                payment_mode = raw_gateway
+                payment_mode = resolved_payment_mode
                 shipping_method = order.get("shipping_lines", [{}])[0].get("title") if order.get("shipping_lines") else None
                 shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
 
@@ -149,7 +221,7 @@ def run_historical_backfill():
                 "subtotal": float(order.get("current_subtotal_price", 0)),
                 "shipping": shipping_cost,
                 "taxes": float(order.get("current_total_tax", 0)) if order.get("current_total_tax") is not None else float(order.get("total_tax", 0)),
-                "total": float(order.get("current_total_price", 0)) if order.get("current_total_price") is not None else float(order.get("total_price", 0)),
+                "total": calculated_total,
                 "outstanding_balance": float(order.get("total_outstanding", 0)),
                 "shipping_method": shipping_method,
                 "payment_method": payment_mode,
