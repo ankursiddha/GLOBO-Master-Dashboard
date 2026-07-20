@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import requests
 import datetime
@@ -134,6 +135,18 @@ def fetch_order_transactions_metrics(order):
         print(f"⚠️ Error parsing transaction layer for order {order_id}: {e}")
         return default_total, default_gateway
 
+
+def extract_ctp_final_value(order_tags):
+    """Parses CTP_..._FV-XXXX.XX tag to get exact net paid rupees."""
+    if not order_tags:
+        return None
+    import re
+    match = re.search(r'CTP_.*?_FV-([\d\.]+)', str(order_tags))
+    return float(match.group(1)) if match else None
+
+
+
+
 def get_internal_id_from_name(order_name):
     """Resolves visible order text milestone markers down to internal Shopify sequence integers."""
     url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json?query=name:{requests.utils.quote(str(order_name).strip())}&status=any"
@@ -196,27 +209,39 @@ def run_historical_backfill():
             raw_created_at = str(order["created_at"])
             clean_created_at = raw_created_at.replace("T", " ").split("+")[0].split(".")[0].strip()
 
+            
+
             # --- SAFE PAYMENT MODE & SHIPPING METHOD EXTRACTION ---
             order_tags = str(order.get("tags", ""))
-            
-            # Execute deep transactions API evaluation for precise Conditions 1, 2, and 3
-            calculated_total, resolved_payment_mode = fetch_order_transactions_metrics(order)
             
             if "COD_TO_PREPAID_CONVERTED" in order_tags or "CTP_" in order_tags:
                 payment_mode = "Razorpay (COD to Prepaid Conversion)"
                 shipping_method = "PREPAID"
                 shipping_cost = 0.0
+                
+                ctp_paid_amount = extract_ctp_final_value(order_tags)
+                if ctp_paid_amount is not None and ctp_paid_amount > 0:
+                    calculated_total = ctp_paid_amount
+                else:
+                    calculated_total = float(order.get("current_total_price", 0)) if order.get("current_total_price") is not None else float(order.get("total_price", 0))
             else:
+                calculated_total, resolved_payment_mode = fetch_order_transactions_metrics(order)
                 payment_mode = resolved_payment_mode
+                
                 shipping_lines = order.get("shipping_lines", [])
                 primary_shipping_line = shipping_lines[0] if shipping_lines else {}
                 shipping_method = primary_shipping_line.get("title")
                 
-                # Check if shipping line was removed during order edits/refunds
                 if primary_shipping_line.get("is_removed", False):
                     shipping_cost = 0.0
                 else:
                     shipping_cost = float(order.get("total_shipping_price_set", {}).get("shop_money", {}).get("amount", 0))
+
+
+
+
+
+            
                     
 
             parent_order = {
@@ -247,13 +272,12 @@ def run_historical_backfill():
                     break
                 except Exception:
                     time.sleep(2)
-
-            if not existing_parent or not existing_parent.data:
-                print(f"✨ [NEW ORDER] Inserted: {current_order_name} (ID: {order_id})")
-            else:
-                old_data = existing_parent.data[0]
-                mutations = []
-                for key, new_val in parent_order.items():
+if not existing_parent or not existing_parent.data:
+ print(f"✨ [NEW ORDER] Inserted: {current_order_name} (ID: {order_id})")
+else:
+ old_data = existing_parent.data[0]
+ mutations = []
+ for key, new_val in parent_order.items():
     old_val = old_data.get(key)
     # Standardize ISO timestamps for comparison to prevent false timezone mutation logs
     clean_old = str(old_val).replace("T", " ").split("+")[0].split(".")[0].strip() if old_val else ""
