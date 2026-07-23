@@ -343,19 +343,23 @@ def run_historical_backfill():
                     if retry == 2: print(f"❌ Connection timeout writing parent tracking to table: {db_err}")
                     time.sleep(4)
             
-            # --- EXTRACT ONLY LEGITIMATE ACTIVE LINE ITEMS ---
+           # --- EXTRACT ONLY LEGITIMATE ACTIVE LINE ITEMS ---
             current_active_lineitem_ids = []
             
             for item in order.get("line_items", []):
                 lineitem_id = str(item["id"])
                 variant_id = item.get("variant_id")
-                quantity = int(item.get("quantity", 0))
+                
+                # CRITICAL FIX: Shopify sets 'current_quantity' to 0 when items are edited or refunded out
+                current_qty = int(item.get("current_quantity", item.get("quantity", 0)))
                 fulfillment_status = item.get("fulfillment_status")
                 
                 # CRITICAL FILTER: Ignore edited out / removed ghost items
-                if quantity <= 0 or fulfillment_status == "removed":
+                if current_qty <= 0 or fulfillment_status == "removed":
                     print(f"🗑️ [SKIPPING REMOVED ITEM] Order {current_order_name} | Ignored ghost sub-row: {item['name']} (ID: {lineitem_id})")
                     continue
+
+                
 
                 if int(item.get("quantity", 0)) == 0:
                     continue
