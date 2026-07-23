@@ -143,10 +143,11 @@ def sync_master_reporting_table():
 
         
         for i in range(max_sub_rows):
+            
             row_data = {
-                "shopify_order_id": str(order_id),
-                "shopify_lineitem_id": None,
-                "shiprocket_shipment_id": None,
+                "shopify_order_id": str(order_id) if pd.notna(order_id) else "",
+                "shopify_lineitem_id": "",  # Standardized to empty string instead of None
+                "shiprocket_shipment_id": "",  # Standardized to empty string instead of None
                 "Name": raw_name,
                 "SR Order ID": None,
                 "Created at": order.get("created_at"),
@@ -172,20 +173,24 @@ def sync_master_reporting_table():
                 "awb number": None,
                 "SHIPROCKET DELIVERY STATUS": order.get("status")
             }
+
             
             if i < len(o_items):
                 item = o_items.iloc[i]
-                row_data["shopify_lineitem_id"] = str(item.get("lineitem_id"))
+                line_id = item.get("lineitem_id")
+                row_data["shopify_lineitem_id"] = str(line_id) if pd.notna(line_id) else ""
                 row_data["Tax 1 Name"] = item.get("tax_1_name")
                 row_data["Tax 1 Value"] = pd.to_numeric(item.get("tax_1_value"), errors='coerce')
                 row_data["Lineitem name"] = item.get("lineitem_name") or item.get("title")
                 row_data["Lineitem quantity"] = int(item.get("lineitem_quantity")) if item.get("lineitem_quantity") else None
                 row_data["Lineitem price"] = pd.to_numeric(item.get("lineitem_price"), errors='coerce')
                 row_data["HSN CODE"] = item.get("hsn_code")
-                
+
+ 
             if i < len(o_ships):
                 ship = o_ships.iloc[i]
-                row_data["shiprocket_shipment_id"] = str(ship.get("id"))
+                ship_id = ship.get("id")
+                row_data["shiprocket_shipment_id"] = str(ship_id) if pd.notna(ship_id) else ""
                 row_data["SR Order ID"] = ship.get("channel_order_id")
                 row_data["awb number"] = ship.get("awb_number")
                 row_data["SHIPROCKET DELIVERY STATUS"] = ship.get("status")
