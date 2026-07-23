@@ -182,7 +182,7 @@ def sync_master_reporting_table():
                 row_data["Tax 1 Name"] = item.get("tax_1_name")
                 row_data["Tax 1 Value"] = pd.to_numeric(item.get("tax_1_value"), errors='coerce')
                 row_data["Lineitem name"] = item.get("lineitem_name") or item.get("title")
-                row_data["Lineitem quantity"] = int(item.get("lineitem_quantity")) if item.get("lineitem_quantity") else None
+                row_data["Lineitem quantity"] = int(item.get("lineitem_quantity")) if pd.notna(item.get("lineitem_quantity")) else None
                 row_data["Lineitem price"] = pd.to_numeric(item.get("lineitem_price"), errors='coerce')
                 row_data["HSN CODE"] = item.get("hsn_code")
 
@@ -218,17 +218,34 @@ def sync_master_reporting_table():
 
     print(f"\n📢 Interception Complete: Found {payload_nan_errors} illegal values embedded inside the compiled JSON structures.")
 
+
+    # 4.5. DEDUPLICATE PAYLOAD BY COMPOSITE KEY TO PREVENT POSTGRES CODE 21000
+    deduped_rows_dict = {}
+    for row in checked_cleaned_rows:
+        composite_key = (
+            row["shopify_order_id"],
+            row["shopify_lineitem_id"],
+            row["shiprocket_shipment_id"]
+        )
+        deduped_rows_dict[composite_key] = row
+
+    final_payload = list(deduped_rows_dict.values())
+    print(f"🧹 Deduplication Complete: Filtered batch down from {len(checked_cleaned_rows)} to {len(final_payload)} unique key payloads.")
+
+
+    
+
     # 5. Non-Destructive Upsert Write Executing Database Synchronization
     print("\n--- 💾 PHASE 4: EXECUTING NON-DESTRUCTIVE DATABASE UPSERT ---")
-    print(f"Upserting {len(checked_cleaned_rows)} processed transactional sub-rows to Supabase...")
+    print(f"Upserting {len(final_payload)} processed transactional sub-rows to Supabase...")
     batch_size = 500
-    for idx in range(0, len(checked_cleaned_rows), batch_size):
-        chunk = checked_cleaned_rows[idx:idx + batch_size]
+    for idx in range(0, len(final_payload), batch_size):
+        chunk = final_payload[idx:idx + batch_size]
         try:
             supabase.table("master_reporting_ledger").upsert(
-    chunk, 
-    on_conflict="shopify_order_id,shopify_lineitem_id,shiprocket_shipment_id"
-).execute()
+                chunk, 
+                on_conflict="shopify_order_id,shopify_lineitem_id,shiprocket_shipment_id"
+            ).execute()
             print(f" Pushed/Updated records {idx} to {idx + len(chunk)} successfully.")
         except Exception as e:
             print(f" ❌ Database write blocked at index block {idx}: {e}")
