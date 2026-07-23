@@ -365,7 +365,7 @@ def run_historical_backfill():
                     continue
 
                 # Collect valid item IDs to track what should exist in Supabase
-                active_fulfillment_item_ids.append(lineitem_id)
+                active_fulfillment_item_ids.add(lineitem_id)
                 
                 
                 existing_item = None
