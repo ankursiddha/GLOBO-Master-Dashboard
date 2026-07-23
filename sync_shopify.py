@@ -344,24 +344,26 @@ def run_historical_backfill():
                     time.sleep(4)
             
             # --- EXTRACT ONLY LEGITIMATE ACTIVE LINE ITEMS ---
-            active_fulfillment_item_ids = set()
-            for ful in order.get("fulfillments", []):
-                if ful.get("status") == "success":
-                    for f_item in ful.get("line_items", []):
-                        active_fulfillment_item_ids.add(str(f_item.get("id")))
-
+            current_active_lineitem_ids = []
+            
             for item in order.get("line_items", []):
                 lineitem_id = str(item["id"])
                 variant_id = item.get("variant_id")
+                quantity = int(item.get("quantity", 0))
+                fulfillment_status = item.get("fulfillment_status")
                 
                 # CRITICAL FILTER: Ignore edited out / removed ghost items
-                if active_fulfillment_item_ids and lineitem_id not in active_fulfillment_item_ids:
-                    print(f"🗑️ [SKIPPING REMOVED ITEM] Ignored ghost sub-row: {item['name']} (ID: {lineitem_id})")
+                if quantity <= 0 or fulfillment_status == "removed":
+                    print(f"🗑️ [SKIPPING REMOVED ITEM] Order {current_order_name} | Ignored ghost sub-row: {item['name']} (ID: {lineitem_id})")
                     continue
 
                 if int(item.get("quantity", 0)) == 0:
                     continue
 
+                # Collect valid item IDs to track what should exist in Supabase
+                current_active_lineitem_ids.append(lineitem_id)
+                
+                
                 existing_item = None
                 for retry in range(3):
                     try:
@@ -400,6 +402,29 @@ def run_historical_backfill():
                         if retry == 2: print(f"❌ Connection timeout writing sub-row line item mapping: {db_err}")
                         time.sleep(4)
 
+
+
+
+            # --- DETECT AND PURGE DELETED LINE ITEMS FROM SUPABASE WITH LOGGING ---
+            try:
+                # Fetch all line items currently stored in Supabase for this order
+                db_items = supabase.table("shopify_order_items").select("lineitem_id, lineitem_name").eq("order_id", order_id).execute()
+                
+                if db_items and db_items.data:
+                    for db_row in db_items.data:
+                        stored_id = str(db_row.get("lineitem_id"))
+                        item_name = db_row.get("lineitem_name", "Unknown Item")
+                        
+                        # If an item exists in DB but is no longer in the active list, purge it!
+                        if stored_id not in current_active_lineitem_ids:
+                            print(f"🔥 [PURGING STALE ITEM FROM DATABASE] Order: {current_order_name} | Removing deleted line item: '{item_name}' (ID: {stored_id})")
+                            supabase.table("shopify_order_items").delete().eq("lineitem_id", stored_id).execute()
+            except Exception as purge_err:
+                print(f"⚠️ Error during line item purge tracking for Order {current_order_name}: {purge_err}")
+
+
+
+            
             # Move pagination forward using the latest processed ID reference string
             current_since_id = int(order_id)
             
