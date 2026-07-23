@@ -365,7 +365,7 @@ def run_historical_backfill():
                     continue
 
                 # Collect valid item IDs to track what should exist in Supabase
-                current_active_lineitem_ids.append(lineitem_id)
+                active_fulfillment_item_ids.append(lineitem_id)
                 
                 
                 existing_item = None
@@ -420,7 +420,7 @@ def run_historical_backfill():
                         item_name = db_row.get("lineitem_name", "Unknown Item")
                         
                         # If an item exists in DB but is no longer in the active list, purge it!
-                        if stored_id not in current_active_lineitem_ids:
+                        if stored_id not in active_fulfillment_item_ids:
                             print(f"🔥 [PURGING STALE ITEM FROM DATABASE] Order: {current_order_name} | Removing deleted line item: '{item_name}' (ID: {stored_id})")
                             supabase.table("shopify_order_items").delete().eq("lineitem_id", stored_id).execute()
             except Exception as purge_err:
